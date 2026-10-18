@@ -57,7 +57,7 @@ def reserve_nonce(value, database, now=None):
             raise ValueError('replayed request') from None
 
 
-def trusted_json(path):
+def protected_file(path):
     path = Path(path)
     # Check ancestors too: a safe file in a writable directory is replaceable.
     for item in [path, *path.parents]:
@@ -66,7 +66,11 @@ def trusted_json(path):
             raise ValueError('unsafe administrator policy path')
     if not path.is_file():
         raise ValueError('policy must be a regular file')
-    return json.loads(path.read_text())
+    return path
+
+
+def trusted_json(path):
+    return json.loads(protected_file(path).read_text())
 
 
 def read_frame(connection, limit):

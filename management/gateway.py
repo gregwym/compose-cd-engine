@@ -6,7 +6,7 @@ import sqlite3
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from receiver.receiver import BoundedHTTPServer
-from management.protocol import MAX_REQUEST, MAX_RESPONSE, ID, ACTIONS, authenticate, trusted_json, read_frame
+from management.protocol import MAX_REQUEST, MAX_RESPONSE, ID, ACTIONS, authenticate, trusted_json, protected_file, read_frame
 
 
 def load(path):
@@ -23,7 +23,7 @@ def load(path):
                 or not isinstance(policy['actions'], list) or not policy['actions']
                 or not set(policy['actions']) <= ACTIONS):
             raise ValueError('invalid gateway project')
-    secret_path = Path(cfg['secret_file'])
+    secret_path = protected_file(cfg['secret_file'])
     st = secret_path.lstat()
     if (secret_path.is_symlink() or not secret_path.is_file() or st.st_uid != 0
             or st.st_mode & 0o027):
