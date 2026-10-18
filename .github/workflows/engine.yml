@@ -1,0 +1,107 @@
+name: Engine CI and image
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s tests -v
+      - run: python3 scripts/generate_workflows.py --check
+      - run: python3 scripts/check_public_tree.py
+      - run: sh -n install.sh && bash -n scripts/sync-state.sh
+      - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose config --quiet
+  image:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Build native image for smoke tests
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          load: true
+          tags: compose-cd-engine:test
+          cache-from: type=gha
+      - name: Smoke test packaged engine and tools
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 receiver/receiver.py --help
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, runner.runner'
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=ref,event=tag
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        id: build
+        if: github.event_name != 'pull_request'
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+  sign:
+    needs: image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Sign the exact image index (separate from build)
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"

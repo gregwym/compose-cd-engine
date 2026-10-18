@@ -1,0 +1,16 @@
+**
+!Dockerfile
+!config/
+!config/cosign-checksums.txt
+!receiver/
+!receiver/*.py
+!verifier/
+!verifier/*.py
+!runner/
+!runner/*.py
+!shared/
+!shared/*.py
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!third_party/
+!third_party/*

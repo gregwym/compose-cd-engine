@@ -1,0 +1,35 @@
+{
+  "id": "example-app",
+  "socket": "/run/compose-cd/example-app.sock",
+  "strategy": "compose",
+  "compose_dir": "/opt/apps/example-app",
+  "project": "example-app",
+  "files": [
+    "compose.yml"
+  ],
+  "services": [
+    "web"
+  ],
+  "health_timeout": 180,
+  "rollback": true,
+  "snapshot_paths": [
+    "/opt/apps/example-app/data"
+  ],
+  "snapshot_retention": 2,
+  "healthcheck": [
+    "wget",
+    "-q",
+    "-O",
+    "/dev/null",
+    "http://127.0.0.1:3000/health"
+  ],
+  "candidate_file": "/var/lib/compose-cd/inbox/example-app.json",
+  "allowed_images": {
+    "web": "ghcr.io/owner/example-app"
+  },
+  "observe": true,
+  "privacy_scan": true,
+  "snapshot_exclude": [
+    "cache"
+  ]
+}
