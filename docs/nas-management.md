@@ -5,6 +5,9 @@ Docker credentials, arbitrary Compose, shell, `exec`, prune, or storage APIs.
 This is an implementation foundation, not a claim of tested DSM compatibility.
 No existing NAS containers, shares, backups or VPS installations are changed.
 
+For DSM-specific network and directory wiring, use the
+[minimal Synology profile](synology.md), reusing DSM's existing HTTPS proxy.
+
 ## Trust boundary
 
 ```
