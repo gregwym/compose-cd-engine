@@ -1,0 +1,10 @@
+{
+  "secret_file": "/etc/compose-cd/secrets/management.key",
+  "nonce_db": "/var/lib/compose-cd-management/nonces.sqlite",
+  "projects": {
+    "example-app": {
+      "socket": "/run/compose-cd-management/example-app.sock",
+      "actions": ["status", "logs", "diagnose", "start", "stop", "restart", "update"]
+    }
+  }
+}

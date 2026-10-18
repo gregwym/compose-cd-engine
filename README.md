@@ -28,6 +28,15 @@ flowchart LR
 - One image, three roles. Installing Docker/Cosign binaries does **not** grant
   access; mounts, UID/GID and network boundaries control each role's authority.
 
+## Restricted NAS management (pilot)
+
+Optional [NAS management API](docs/nas-management.md) exposes only administrator-
+approved project/actions: status, log severity summaries, fixed readiness checks,
+start/stop/restart and verified-update requests. No SSH, Docker credentials,
+arbitrary commands or Compose changes are given to the caller. NAS backups stay
+outside the engine. DSM integration and application pilots require real-device
+validation; this is not yet production NAS support.
+
 ## Engine vs. deployment
 
 | Public engine repository | Your private operations repository / server |

@@ -1,0 +1,25 @@
+# Optional private management entrypoint. No host ports are published.
+services:
+  management:
+    image: ${CD_ENGINE_IMAGE:?Set a verified immutable engine image}
+    restart: unless-stopped
+    command: [python3, -m, management.gateway]
+    user: "10001:10001"
+    group_add: ["${CD_MANAGEMENT_GID:-30003}", "${CD_SECRET_GID:-30002}"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    pids_limit: 32
+    networks: [caddy_net]
+    volumes:
+      - ./management-policy:/etc/compose-cd/management:ro
+      - ./secrets/management.key:/etc/compose-cd/secrets/management.key:ro
+      - ./management-run:/run/compose-cd-management:ro
+      - ./management-state:/var/lib/compose-cd-management
+    tmpfs: [/tmp:size=1m,noexec,nosuid,nodev]
+  runner:
+    environment:
+      CD_MANAGEMENT_GID: "${CD_MANAGEMENT_GID:-30003}"
+    volumes:
+      - ./management-run:/run/compose-cd-management
