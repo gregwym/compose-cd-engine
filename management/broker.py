@@ -114,6 +114,10 @@ def dispatch(cfg, value, runner):
         audit = {'project': cfg['id'], 'action': action, 'request_id': value['request_id'], 'status': 'running', 'timestamp': int(time.time())}
         audit_path = runner.STATE_DIR / (cfg['id'] + '.management.json')
         runner.write_json(audit_path, audit)
+        if action not in ('status', 'logs'):
+            # Survive a crash between dispatch and terminal audit. Never infer
+            # success or automatically replay an operation left in running state.
+            runner.write_json(runner.STATE_DIR / (cfg['id'] + '.last-management-action.json'), audit)
         try:
             if action == 'status':
                 result = status(cfg, runner)

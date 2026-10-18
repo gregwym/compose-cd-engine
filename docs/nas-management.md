@@ -127,7 +127,8 @@ Mutations and deployments share the same global lock. A concurrent action return
 10-second response timeout: `outcome_unknown` is not failure, and replaying a
 restart is unsafe. Query `status` after it completes. It returns the last action's
 request ID/result and current container/deployment states; during execution it may
-return `busy`. Do not use a proxy that automatically retries management POSTs.
+return `busy`. A last action left `running` after a process crash has unknown
+outcome and requires reconciliation, not automatic replay. Do not use a proxy that automatically retries management POSTs.
 
 `logs` returns **only severity counts**, last 100 lines/5 minutes, at most 32 KiB
 per service. Message contents are withheld, not regex-redacted. Unstructured logs
