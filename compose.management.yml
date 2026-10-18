@@ -17,7 +17,7 @@ services:
       - ./secrets/management.key:/etc/compose-cd/secrets/management.key:ro
       - ./management-run:/run/compose-cd-management:ro
       - ./management-state:/var/lib/compose-cd-management
-    tmpfs: [/tmp:size=1m,noexec,nosuid,nodev]
+    tmpfs: ["/tmp:size=1m,noexec,nosuid,nodev"]
   runner:
     environment:
       CD_MANAGEMENT_GID: "${CD_MANAGEMENT_GID:-30003}"
