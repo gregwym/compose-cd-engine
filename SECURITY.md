@@ -17,3 +17,15 @@ Keep secrets, policies, transport SSH keys, state and logs outside this reposito
 and image build context. Pin engine image digests after verifying the exact
 workflow signing identity. Dependencies and Actions are pinned, not automatically
 trusted forever. The bounded public-tree check is not a comprehensive secret scan.
+
+## Optional management API
+
+See [NAS trust boundaries and installation](docs/nas-management.md). Management
+requests carry no Docker arguments, paths, image names, service selectors or shell.
+The unprivileged HTTPS entrypoint and privileged action broker enforce independent
+project/action allowlists. Nonce stores persist across restarts; never disable TLS
+or expose this endpoint publicly. Raw log messages are withheld rather than
+claimed safe through incomplete redaction. A compromised Runner still has full
+Docker authority; a signed app image can access all app-granted data/networks.
+NAS snapshots/backups and administrator recovery acknowledgements are not agent
+operations. Pilot management targets disable tar snapshots and automatic rollback.

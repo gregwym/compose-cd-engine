@@ -25,6 +25,7 @@ COPY receiver/ receiver/
 COPY verifier/ verifier/
 COPY runner/ runner/
 COPY shared/ shared/
+COPY management/ management/
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/compose-cd-engine/
 COPY third_party/ /usr/share/doc/compose-cd-engine/third_party/
 USER 10001:10001

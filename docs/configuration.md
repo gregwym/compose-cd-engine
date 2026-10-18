@@ -45,6 +45,7 @@ own checks; a container health check does not prove them.
 Receipts include project/run/revision, requested digest references, actual image
 IDs, timestamps and exception class, not raw application logs or filesystem paths.
 States include observed/checked/validated/deploying/success/no_change/failed/
-rolled_back/rollback_failed. `<id>.deployed.json` keeps the last successful actual
+rolled_back/rollback_failed/recovery_required. Disabled rollback never reports a
+successful restoration. `<id>.deployed.json` keeps the last successful actual
 deployment independently from subsequent check-only receipts. All receipts remain
 private unless the operator explicitly reviews and publishes them.

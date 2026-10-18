@@ -25,6 +25,7 @@ jobs:
       - run: python3 scripts/check_public_tree.py
       - run: sh -n install.sh && bash -n scripts/sync-state.sh
       - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose config --quiet
+      - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose -f compose.yml -f compose.management.yml config --quiet
   image:
     needs: validate
     runs-on: ubuntu-latest
@@ -49,9 +50,16 @@ jobs:
       - name: Smoke test packaged engine and tools
         run: |
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 receiver/receiver.py --help
-          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, runner.runner'
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, runner.runner, management.gateway, management.broker'
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
+      - name: Exercise restricted management against disposable Docker services
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --user 0:0 --tmpfs /tmp:size=64m \
+            -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/scripts/smoke_management.py:/integration/smoke.py:ro" \
+            compose-cd-engine:test python3 /integration/smoke.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         if: github.event_name != 'pull_request'
         with:

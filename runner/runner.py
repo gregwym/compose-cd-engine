@@ -25,7 +25,7 @@ def load_target(path):
         raise ValueError("target policy must be a root-owned, non-writable regular file")
     cfg = json.loads(path.read_text())
     required = {"id", "socket", "strategy", "compose_dir", "project", "files", "services"}
-    optional = {"health_timeout", "healthcheck", "rollback", "snapshot_paths", "snapshot_retention", "snapshot_exclude", "candidate_file", "allowed_images", "observe", "healthchecks", "tcp_checks", "same_digest", "privacy_scan"}
+    optional = {"health_timeout", "healthcheck", "rollback", "snapshot_paths", "snapshot_retention", "snapshot_exclude", "candidate_file", "allowed_images", "observe", "healthchecks", "tcp_checks", "same_digest", "privacy_scan", "management", "require_readiness"}
     if not isinstance(cfg, dict) or set(cfg) - required - optional or not required <= set(cfg):
         raise ValueError("invalid target keys")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", cfg["id"]):
@@ -100,7 +100,23 @@ def load_target(path):
     if set(cfg.get("allowed_images", {})) != set(cfg["services"]):
         raise ValueError("one approved image repository per service required")
     cfg.setdefault("observe", True)
+    cfg.setdefault("require_readiness", False)
+    if type(cfg["require_readiness"]) is not bool:
+        raise ValueError("require_readiness must be boolean")
+    if "management" in cfg:
+        from management.broker import validate_policy
+        validate_policy(cfg)
     return cfg
+
+
+def log_process(cfg, service):
+    # Fixed bounded Docker Compose logs, no caller-controlled options.
+    argv = [DOCKER, "compose", "--project-directory", cfg["compose_dir"], "-p", cfg["project"]]
+    for name in cfg["files"]:
+        argv += ["-f", str(Path(cfg["compose_dir"]) / name)]
+    argv += ["logs", "--no-color", "--no-log-prefix", "--tail", "100", "--since", "5m", service]
+    return subprocess.Popen(argv, cwd=cfg["compose_dir"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
 def command(cfg, *args, timeout=1200, env=None, compose_files=None):
@@ -161,6 +177,11 @@ def wait_healthy(cfg, services=None):
                 continue
             healthcheck = cfg.get("healthchecks", {}).get(service, cfg.get("healthcheck"))
             ports = cfg.get("tcp_checks", {}).get(service, [])
+            if cfg.get("require_readiness") and health != "healthy" and not healthcheck:
+                # TCP listeners alone do not establish application readiness.
+                all_ok = False
+                last[service] = "readiness probe required"
+                continue
             if ports:
                 probe = "import socket; [socket.create_connection(('127.0.0.1',p),3).close() for p in " + repr(ports) + "]"
                 result = subprocess.run([DOCKER, "run", "--rm", "--pull", "never", "--read-only",
@@ -421,11 +442,14 @@ def deploy(cfg):
         prior = json.loads(prior_path.read_text()) if prior_path.exists() else {}
         if value["order"] < prior.get("order", [0, 0]):
             raise ValueError("stale deployment candidate")
-        if value["order"] == prior.get("order") and prior.get("status") in ("success", "no_change", "rolled_back", "rollback_failed"):
+        if value["order"] == prior.get("order") and prior.get("status") in ("success", "no_change", "rolled_back", "rollback_failed", "recovery_required"):
             return
         if cfg["observe"] or value["mode"] == "check":
             receipt(cfg, value, "observed" if cfg["observe"] else "checked")
             return
+        recovery_latch = STATE_DIR / (cfg["id"] + ".recovery-required.json")
+        if "management" in cfg and recovery_latch.exists():
+            raise RuntimeError("administrator recovery acknowledgement required")
         previous = current_containers(cfg)
         receipt(cfg, value, "validated")
         wanted_ids = {}
@@ -443,19 +467,25 @@ def deploy(cfg):
             receipt(cfg, value, "failed", error=type(exc).__name__)
             raise
         if all(previous[k] and previous[k]["image_id"] == wanted_ids[k] for k in cfg["services"]):
-            wait_healthy(cfg)
+            try:
+                wait_healthy(cfg)
+            except Exception as exc:
+                receipt(cfg, value, "failed", error=type(exc).__name__)
+                raise
             receipt(cfg, value, "no_change", running_images=wanted_ids)
             return
         active = STATE_DIR / (cfg["id"] + ".active.json")
         next_override = STATE_DIR / (cfg["id"] + ".candidate.json")
         write_json(next_override, {"services": {k: {"image": v} for k, v in value["images"].items()}})
         snapshot = None
-        stopped = False
+        if "management" in cfg:
+            # Write-ahead guard: a crash after container recreation may already
+            # have run DB migrations. Never blindly replay after Runner restart.
+            write_json(recovery_latch, {"status": "deployment_in_progress", "order": value["order"]})
         receipt(cfg, value, "deploying")
         try:
             if cfg["snapshot_paths"]:
                 command(cfg, "stop", *cfg["services"], timeout=300)
-                stopped = True
                 snapshot = snapshot_data(cfg)
             command(cfg, "up", "-d", "--no-deps", "--no-build", "--pull", "never", *cfg["services"],
                     compose_files=[*cfg["files"], str(next_override)])
@@ -465,6 +495,11 @@ def deploy(cfg):
                 raise RuntimeError("running digest does not match candidate")
             write_json(active, json.loads(next_override.read_text()))
         except Exception as exc:
+            if not cfg.get("rollback", True):
+                if "management" in cfg:
+                    write_json(recovery_latch, {"status": "recovery_required", "order": value["order"]})
+                receipt(cfg, value, "recovery_required", error=type(exc).__name__)
+                raise
             try:
                 restore(cfg, previous, snapshot if snapshot else None)
                 receipt(cfg, value, "rolled_back", error=type(exc).__name__)
@@ -482,6 +517,8 @@ def deploy(cfg):
                     f"compose-cd-rollback:{cfg['id']}-{service.lower()}"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
         receipt(cfg, value, "success", running_images=wanted_ids)
+        if "management" in cfg:
+            recovery_latch.unlink()
 
 
 def serve(cfg):
@@ -525,7 +562,14 @@ def main():
     sockets = [x["socket"] for x in configs]
     if len(ids) != len(set(ids)) or len(sockets) != len(set(sockets)):
         raise SystemExit("duplicate target id or socket")
+    management_sockets = [x["management"]["socket"] for x in configs if "management" in x]
+    if len(management_sockets) != len(set(management_sockets)):
+        raise SystemExit("duplicate management socket")
     for cfg in configs:
+        if "management" in cfg:
+            import sys
+            from management.broker import serve as management_serve
+            threading.Thread(target=management_serve, args=(cfg, sys.modules[__name__]), daemon=True).start()
         threading.Thread(target=serve, args=(cfg,), daemon=True).start()
     threading.Event().wait()
 
