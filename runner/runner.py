@@ -478,6 +478,10 @@ def deploy(cfg):
         next_override = STATE_DIR / (cfg["id"] + ".candidate.json")
         write_json(next_override, {"services": {k: {"image": v} for k, v in value["images"].items()}})
         snapshot = None
+        if "management" in cfg:
+            # Write-ahead guard: a crash after container recreation may already
+            # have run DB migrations. Never blindly replay after Runner restart.
+            write_json(recovery_latch, {"status": "deployment_in_progress", "order": value["order"]})
         receipt(cfg, value, "deploying")
         try:
             if cfg["snapshot_paths"]:
@@ -513,6 +517,8 @@ def deploy(cfg):
                     f"compose-cd-rollback:{cfg['id']}-{service.lower()}"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
         receipt(cfg, value, "success", running_images=wanted_ids)
+        if "management" in cfg:
+            recovery_latch.unlink()
 
 
 def serve(cfg):

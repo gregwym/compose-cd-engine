@@ -274,3 +274,21 @@ class RecoveryLatch(unittest.TestCase):
                     runner.deploy(cfg)
                 with self.assertRaisesRegex(ValueError, 'administrator recovery'):
                     broker.dispatch(cfg, message('start'), runner)
+
+class DeploymentCrashGuard(unittest.TestCase):
+    def test_process_crash_after_recreation_leaves_write_ahead_recovery_guard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config()
+            cfg['files'] = ['compose.yml']
+            value = {'order': [20, 1], 'mode': 'deploy', 'source_sha': 'a' * 40, 'images': {'app': 'image@sha256:' + 'b' * 64}}
+            old = {'app': {'image_id': 'old', 'image_ref': 'old', 'container': 'old'}}
+            def crash(*_args, **_kwargs):
+                self.assertTrue((root / 'test.recovery-required.json').exists())
+                raise SystemExit('simulated process termination')
+            with patch.object(runner, 'STATE_DIR', root), patch.object(runner, 'candidate', return_value=value), patch.object(runner, 'current_containers', return_value=old), patch.object(runner, 'preflight_space'), patch.object(runner.subprocess, 'run', return_value=Mock(stdout=b'new')), patch.object(runner, 'command', side_effect=crash):
+                with self.assertRaises(SystemExit):
+                    runner.deploy(cfg)
+                self.assertEqual(json.loads((root / 'test.recovery-required.json').read_text())['status'], 'deployment_in_progress')
+                with self.assertRaisesRegex(RuntimeError, 'administrator recovery'):
+                    runner.deploy(cfg)

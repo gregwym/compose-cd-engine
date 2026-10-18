@@ -154,7 +154,10 @@ VPS targets without management keep their configured behavior.
 A partial deployment failure with rollback disabled records `recovery_required`,
 never `rolled_back`. That candidate is not automatically reapplied by polling.
 For management targets a persistent `state/<project>.recovery-required.json`
-latch also blocks newer deployments and start/restart. Stop, diagnostics and status
+latch also blocks newer deployments and start/restart. This guard is written
+before container recreation and cleared only after verified deployment success;
+a Runner crash during deployment therefore cannot silently reapply a potentially
+migrated database update. Stop, diagnostics and status
 remain available. After completing external recovery and verifying state, only an
 administrator can remove that latch; no agent API can acknowledge recovery.
 `observe: true` can additionally pause the source during investigation.
