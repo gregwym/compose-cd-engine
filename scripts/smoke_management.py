@@ -22,7 +22,9 @@ def main():
                    'command': ['python3', '-m', 'http.server', '8080', '--bind', '127.0.0.1'],
                    'read_only': True, 'cap_drop': ['ALL'], 'network_mode': 'none',
                    'healthcheck': {'test': ['CMD', *check], 'interval': '1s', 'timeout': '3s', 'retries': 10}}
-        (root / 'compose.json').write_text(json.dumps({'services': {'app': service, 'unrelated': service}}))
+        # New Compose emits an obsolete-version warning to stderr; it must not
+        # contaminate ps output used by status/readiness/start/stop operations.
+        (root / 'compose.json').write_text(json.dumps({'version': '3.8', 'services': {'app': service, 'unrelated': service}}))
         cfg = {'id': 'test', 'project': project, 'services': ['app'],
                'files': ['compose.json'], 'compose_dir': directory, 'rollback': False,
                'snapshot_paths': [], 'observe': False, 'require_readiness': True, 'health_timeout': 30,

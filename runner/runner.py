@@ -130,7 +130,9 @@ def command(cfg, *args, timeout=1200, env=None, compose_files=None):
         argv += ["-f", str(path if path.is_absolute() else Path(cfg["compose_dir"]) / path)]
     argv += list(args)
     return subprocess.run(argv, cwd=cfg["compose_dir"], stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          # Compose warnings (e.g. obsolete version fields) are
+                          # not container IDs or other machine-readable output.
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           timeout=timeout, check=True, env=env)
 
 
