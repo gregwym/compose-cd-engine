@@ -1,0 +1,26 @@
+# Merge after compose.yml and compose.management.yml in a PRIVATE deployment.
+# Copy locally; never commit your actual NAS paths, policy or credentials here.
+services:
+  management:
+    # No host port, including localhost: older Docker releases have a same-L2
+    # localhost-publishing weakness. DSM proxies directly to this fixed IP.
+    networks:
+      caddy_net:
+        ipv4_address: ${CD_NAS_MANAGEMENT_IP:?Choose an unused IP in the control subnet}
+  runner:
+    volumes:
+      # Only administrator-owned Compose/config, NOT photos or shared folders.
+      # Host and Runner paths must be identical; data stays on the Docker host.
+      - type: bind
+        source: ${CD_NAS_APP_CONFIG_DIR:?Set the approved app config directory}
+        target: ${CD_NAS_APP_CONFIG_DIR:?Set the same absolute config directory}
+        read_only: true
+networks:
+  caddy_net:
+    # Reuse the base network key; no Caddy installation is needed on DSM.
+    external: false
+    name: compose-cd-nas-control
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${CD_NAS_CONTROL_SUBNET:?Choose an unused private Docker subnet}

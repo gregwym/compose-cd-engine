@@ -26,6 +26,27 @@ jobs:
       - run: sh -n install.sh && bash -n scripts/sync-state.sh
       - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose config --quiet
       - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose -f compose.yml -f compose.management.yml config --quiet
+      - name: Validate minimal Synology Compose profile
+        env:
+          CD_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          CD_NAS_APP_CONFIG_DIR: /volume1/compose-cd-apps/example-app
+          CD_NAS_CONTROL_SUBNET: 172.31.247.0/28
+          CD_NAS_MANAGEMENT_IP: 172.31.247.2
+        run: |
+          docker compose -f compose.yml -f compose.management.yml -f examples/compose.synology.yml config --format json > /tmp/nas-profile.json
+          python3 - <<'PY'
+          import json
+          cfg = json.load(open('/tmp/nas-profile.json'))
+          assert not cfg['services']['management'].get('ports')
+          assert cfg['services']['management']['networks']['caddy_net']['ipv4_address'] == '172.31.247.2'
+          assert not cfg['services']['receiver'].get('ports')
+          assert cfg['services']['runner']['network_mode'] == 'none'
+          assert not cfg['networks']['caddy_net'].get('external', False)
+          mounts = cfg['services']['runner']['volumes']
+          app = [v for v in mounts if v['target'] == '/volume1/compose-cd-apps/example-app']
+          assert len(app) == 1 and app[0]['read_only']
+          assert not any(v['target'].startswith('/volume1/') and v not in app for v in mounts)
+          PY
   image:
     needs: validate
     runs-on: ubuntu-latest
