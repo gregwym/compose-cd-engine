@@ -492,7 +492,8 @@ class Service:
                     schema.check(all(re.fullmatch('[a-f0-9]{64}', x) for x in ids))
                     if ids:
                         if auth:
-                            self.authorize(auth[0], project, auth[1], spec, self.policy(require_enabled=op != 'stop'), op)
+                            require(self.authorize(auth[0], project, auth[1], spec, self.policy(require_enabled=op != 'stop'), op) == auth[2])
+                        mutated = True
                         self.docker('stop', '--time', '10', *ids)
                         if op == 'retire':
                             # No --volumes, no image/network pruning, no storage deletion.
@@ -515,7 +516,7 @@ class Service:
                     for args in [('ps', '--all', '--quiet'), ('network', 'ls', '--quiet')]:
                         schema.check(not self.docker(*args, '--filter', 'label=com.docker.compose.project=cdp-' + project).strip())
                 if auth:
-                    self.authorize(auth[0], project, auth[1], spec, self.policy(), op)
+                    require(self.authorize(auth[0], project, auth[1], spec, self.policy(), op) == auth[2])
                 stage = 'storage'
                 self.provision_storage(project, spec, cfg)
                 directory = self.working_directory(task, compose)
@@ -529,7 +530,7 @@ class Service:
                 # immediately before mutating containers, not just at dequeue.
                 require(schema.fingerprint(self.policy()) == policy_hash, 'stale_request')
                 if auth:
-                    self.authorize(auth[0], project, auth[1], spec, cfg, op)
+                    require(self.authorize(auth[0], project, auth[1], spec, cfg, op) == auth[2])
                 if op != 'stop':
                     # A crash after recreation might leave migrated data. Latch
                     # BEFORE invoking Docker, never automatically restore data.
@@ -559,7 +560,9 @@ class Service:
                     self.audit_task(db, task, 'success')
             except Exception as exc:
                 with self.db() as db:
-                    state = 'recovery_required' if mutated and op != 'stop' else 'failed'
+                    state = ('outcome_unknown' if op in ('stop', 'retire') else 'recovery_required') if mutated else 'failed'
+                    if state == 'outcome_unknown':
+                        db.execute('UPDATE projects SET recovery=1 WHERE id=?', (project,))
                     db.execute('UPDATE tasks SET state=?,updated=? WHERE id=?',
                                (state, int(time.time()), task))
                     category = exc.category if isinstance(exc, Denied) else 'operation_failed'

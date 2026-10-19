@@ -68,6 +68,47 @@ class SandboxAndOperations(auth.GrantEnforcement):
         with self.service.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM audit_outbox WHERE sent=0').fetchone()[0], 0)
 
+    def test_revoked_task_grant_cannot_be_substituted_during_pull(self):
+        first = self.apply()
+        with self.auth_store.db() as db:
+            old = dict(db.execute('SELECT * FROM grants').fetchone())
+            row = dict(db.execute('SELECT * FROM requests').fetchone())
+        # A distinct, valid replacement authorization is not authority to
+        # continue a task bound to the earlier revoked Grant.
+        request = self.auth_store.propose({'agent': row['agent'], 'project': row['project'], 'plan': 'f' * 32,
+            'spec_hash': row['spec_hash'], 'policy': row['policy'], 'scope': json.loads(row['scope']),
+            'mode': 'persistent', 'lifetime': 3600, 'sandbox': False})
+        with self.auth_store.db() as db:
+            self.auth_store.issue(db, request['request_id'], 'independent-administrator', None)
+        def compose(*args, **kwargs):
+            if 'pull' in args:
+                with self.auth_store.db() as db:
+                    db.execute("UPDATE grants SET status='revoked' WHERE id=?", (old['id'],))
+            self.assertNotIn('up', args)
+        self.run_job(compose)
+        self.assertEqual(self.task(first)['status'], 'failed')
+
+    def test_ambiguous_retire_never_claims_clean_failure_or_success(self):
+        self.apply(); self.run_job()
+        task = self.call('retire')['task_id']
+        with patch.object(self.service, 'docker', side_effect=[b'a' * 64, TimeoutError()]):
+            self.service.run_one()
+        self.assertEqual(self.task(task)['status'], 'outcome_unknown')
+        with self.assertRaises(Denied):
+            self.call('start')
+
+    def test_plan_categories_and_host_control_storage_rejection(self):
+        for key, value, category in [('image', projects.IMAGE.replace('team/app', 'evil/app'), 'forbidden_by_policy'),
+                                     ('memory_mb', 1024, 'insufficient_resources'), ('privileged', True, 'invalid_configuration')]:
+            spec = projects.spec(); spec['services']['app'][key] = value
+            with self.subTest(key=key), self.assertRaises(Denied) as error:
+                self.call('plan', spec)
+            self.assertEqual(error.exception.category, category)
+        for hostpath in ('/etc', '/run', '/run/compose-cd-approval', '/var/lib/compose-cd/state'):
+            cfg = copy.deepcopy(self.cfg); cfg['storage']['config']['path'] = hostpath
+            with self.assertRaises(ValueError):
+                schema.policy(cfg)
+
 
 def load_tests(loader, tests, pattern):
     # The base regressions already run once with grants in test_authorization.
