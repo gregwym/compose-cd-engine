@@ -71,6 +71,15 @@ different repositories are **not** claimed atomic or mutually compatible.
 Existing service sets cannot be silently reduced. Partial mutation latches
 recovery, never restores data or reports a fictitious rollback.
 
+For coordinated application images, the administrator may configure
+`release_groups: [["app", "worker"]]`. If any named member is declared, every
+member is required even on first creation; Verifier requires all members signed
+from the same source and revision. Third-party databases can remain independently
+pinned services outside this coordinated build group. Without such a trusted
+group declaration, the engine cannot infer an upstream application's mandatory
+service list; do not claim automatic completeness discovery. Deployment is still
+not an atomic database transaction, even for a complete verified group.
+
 ## Administrator installation (manual, not performed by agents)
 
 Start from the provisioning installation and same-absolute-path mounts in

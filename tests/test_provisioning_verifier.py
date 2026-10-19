@@ -62,3 +62,17 @@ class ProvisioningSignatures(unittest.TestCase):
             self.verify()
         self.cfg['images'][self.repo]['digests'] = ['a' * 64]
         self.assertEqual(self.verify()['services']['app'], 'administrator_unsigned_exception')
+
+    def test_initial_coordinated_group_cannot_be_incomplete_or_unsigned(self):
+        self.cfg['release_groups'] = [['app', 'worker']]
+        with self.assertRaises(schema.PolicyViolation):
+            self.verify()
+        self.spec['services']['worker'] = copy.deepcopy(self.spec['services']['app'])
+        self.spec['services']['worker']['ports'] = []
+        with patch('verifier.provisioning.cosign'), \
+             patch('verifier.provisioning.resolve', return_value=('sha256:' + 'a' * 64, {})), \
+             patch('verifier.provisioning.config_document', return_value=self.doc):
+            self.assertEqual(self.verify()['status'], 'verified')
+        self.cfg['images'][self.repo].update(allow_unsigned=True, digests=['a' * 64])
+        with self.assertRaises(Denied):
+            self.verify()

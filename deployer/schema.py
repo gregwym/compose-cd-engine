@@ -90,7 +90,7 @@ def request(raw):
 def policy(cfg):
     fields(cfg, {'workspace', 'storage', 'images', 'port_range', 'bind_ip',
                  'max_projects', 'max_services', 'max_memory_mb', 'max_cpus',
-                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'}, {'authorization', 'verification'})
+                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'}, {'authorization', 'verification', 'release_groups'})
     check(type(cfg['enabled']) is bool and type(cfg['allow_egress']) is bool)
     check(isinstance(cfg['operations'], list) and cfg['operations']
           and all(isinstance(x, str) and x in OPS for x in cfg['operations']))
@@ -172,6 +172,15 @@ def policy(cfg):
                     number(profile['memory_mb'], 32, cfg['max_memory_mb'])
                     number(profile['cpus'], 1, cfg['max_cpus'])
                     number(profile['max_services'], 1, cfg['max_services'])
+    groups = cfg.get('release_groups', [])
+    check(isinstance(groups, list) and len(groups) <= 32)
+    members = set()
+    for group in groups:
+        check(isinstance(group, list) and 2 <= len(group) <= cfg['max_services'])
+        for service in group:
+            name(service)
+            check(service not in members)
+            members.add(service)
     return cfg
 
 
@@ -182,6 +191,10 @@ def compile_project(project, spec, cfg):
     allowed(not spec.get('egress', cfg['allow_egress']) or cfg['allow_egress'])
     check(isinstance(spec['services'], dict) and len(spec['services']) >= 1)
     resources(len(spec['services']) <= cfg['max_services'])
+    for group in cfg.get('release_groups', []):
+        # A trusted coordinated group is either absent or complete, including
+        # on the very first project declaration, before any human approval.
+        allowed(not set(group).intersection(spec['services']) or set(group) <= set(spec['services']))
     services, used_ports = {}, set()
     memory = cpus = 0
     for service, value in spec['services'].items():
