@@ -132,7 +132,12 @@ class Service:
             if agent:
                 with self.db() as db:
                     require(db.execute('SELECT 1 FROM task_auth WHERE id=? AND agent=?', (payload['task_id'], agent)).fetchone())
-            return dict(zip(('task_id', 'operation', 'status', 'created', 'updated'), row))
+            result = dict(zip(('task_id', 'operation', 'status', 'created', 'updated'), row))
+            with self.db() as db:
+                detail = db.execute('SELECT stage,category FROM task_detail WHERE id=?', (payload['task_id'],)).fetchone()
+            if detail:
+                result.update(stage=detail[0], category=detail[1])
+            return result
         if op == 'status':
             return self.status(project)
         if op == 'diagnose':
