@@ -31,6 +31,7 @@ class Adapter:
         self.browser.ceremony('enroll', token=self.browser.server.store.bootstrap('owner'))
         self.browser.ceremony('login')
         self.project, self.root = project, root
+        self.agent, self.endpoint = 'openclaw', 'https://disposable-ci.invalid'
         self.key = os.urandom(48).hex().encode()
         key = root / 'agent.key'; key.write_bytes(self.key); key.chmod(0o600)
         service_key = root / 'service.key'; service_key.write_bytes(os.urandom(48).hex().encode()); service_key.chmod(0o600)
@@ -89,6 +90,22 @@ class Adapter:
                 return result
             time.sleep(.2)
         raise AssertionError('disposable authorization task timed out')
+
+    def deploy(self, spec):
+        from scripts.agent import Workflow
+        events = []
+        flow = Workflow(self, self.root / 'workflow.json', spec, emit=events.append)
+        assert flow.step()['status'] == 'planned'
+        plan_id = flow.state['plan_id']
+        assert flow.step()['status'] == 'authorization_required'
+        self.approve(plan_id)
+        # Simulated agent restart: no spec or administrator credential is needed
+        # by the resumed SDK; it polls and applies the original immutable plan.
+        resumed = Workflow(self, self.root / 'workflow.json', emit=events.append)
+        assert resumed.run(follow=True, timeout=180, interval=.2) == 0, events
+        assert resumed.state['plan_id'] == plan_id
+        assert 'do-not-return' not in (self.root / 'workflow.json').read_text()
+        return {'plan_id': plan_id}, resumed.state['task_id']
 
     def close(self):
         self.server.shutdown(); self.server.server_close()

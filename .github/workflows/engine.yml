@@ -139,6 +139,7 @@ jobs:
             -v /run/compose-project-smoke:/run/compose-project-smoke \
             -v "$PWD/scripts/smoke_projects.py:/integration/smoke.py:ro" \
             -v "$PWD/scripts/auth_smoke_adapter.py:/integration/auth_smoke_adapter.py:ro" \
+            -v "$PWD/scripts/agent.py:/app/scripts/agent.py:ro" \
             -v "$PWD/tests:/integration/tests:ro" \
             compose-cd-engine:test python3 /integration/smoke.py
       - name: Verify public signed provisioning release independently (no Docker socket)

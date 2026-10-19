@@ -90,12 +90,12 @@ def main():
         subprocess.run(docker + ['run', '-d', '--name', unrelated, '--network', 'none', label],
                        check=True, stdout=subprocess.DEVNULL)
         before = subprocess.check_output(docker + ['inspect', '--format', '{{.Id}} {{.State.StartedAt}}', unrelated])
-        plan = call('plan', spec)
-        assert 'do-not-return' not in json.dumps(plan)
         if adapter:
-            assert plan['status'] == 'needs_approval'
-            adapter.approve(plan['plan_id'])
-        task = call('apply', {'plan_id': plan['plan_id']})['task_id']
+            plan, task = adapter.deploy(spec)
+        else:
+            plan = call('plan', spec)
+            assert 'do-not-return' not in json.dumps(plan)
+            task = call('apply', {'plan_id': plan['plan_id']})['task_id']
         assert call('apply', {'plan_id': plan['plan_id']})['task_id'] == task
         assert finish(task) == 'success'
         assert call('status')['services']['web'] == 'running'
@@ -107,6 +107,17 @@ def main():
         # neither DAC_OVERRIDE nor permission to traverse the app's 0750 leaf.
         service.docker('exec', container, 'python3', '-c',
             "from pathlib import Path; Path('/appdata/media').write_text('preserve-downloads')")
+        if adapter:
+            assert call('diagnose')['diagnostics']['web']['health'] == 'healthy'
+            assert finish(call('retire')['task_id']) == 'success'
+            assert call('status')['lifecycle'] == 'retired'
+            again = call('plan', spec)
+            assert again['status'] == 'authorized'
+            assert finish(call('apply', {'plan_id': again['plan_id']})['task_id']) == 'success'
+            container = service.docker('ps', '--quiet', '--filter',
+                'label=com.docker.compose.project=cdp-' + project).decode().strip()
+            assert service.docker('exec', container, 'python3', '-c',
+                "from pathlib import Path; print(Path('/appdata/media').read_text())").strip() == b'preserve-downloads'
         # Administrator changes approved fixed readiness probe to force a real
         # partially applied update failure. No change to image/mount authority.
         cfg['images'][repo]['healthcheck'] = ['python3', '-c', 'raise SystemExit(1)']
@@ -139,7 +150,7 @@ def main():
             for grant in call('grants')['grants']:
                 adapter.browser.ceremony('revoke', grant['grant_id'])
             assert call('stop')['status'] == 'not_authorized'
-            print('Real authorization transport passed: HTTP/HMAC principal, Runner Unix socket, isolated approval RPC, software-Passkey enrollment/approval, protected storage gate, lifecycle, policy reauthorization and revocation. Physical Safari and DSM are NOT covered.')
+            print('Real authorization transport passed: HTTP/HMAC principal, Runner Unix socket, approval RPC, software-Passkey enrollment/approval, SDK restart and automatic original-plan continuation, protected storage gate, diagnostics, retirement/recreation with retained media, lifecycle, policy reauthorization and revocation. Physical Safari and DSM are NOT covered.')
         print('Project Docker integration passed: create, idempotent apply, health, lifecycle, real failed update, recovery latch, preserved media and unrelated uptime. Local-image adapter; registry verification is NOT covered by this smoke.')
     finally:
         service.stopped.set()
