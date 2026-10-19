@@ -87,9 +87,13 @@ def main():
         assert finish(task) == 'success'
         assert call('status')['services']['web'] == 'running'
         for op in ('restart', 'stop', 'start'):
-            assert finish(call(op)['task_id']) == 'success'
-        data = root / 'config' / project / 'web' / 'media'
-        data.write_text('preserve-downloads')
+            assert finish(call(op)['task_id']) == 'success', op
+        container = service.docker('ps', '--quiet', '--filter',
+            'label=com.docker.compose.project=cdp-' + project).decode().strip()
+        # Simulate app writes as the actual unprivileged image user. Runner has
+        # neither DAC_OVERRIDE nor permission to traverse the app's 0750 leaf.
+        service.docker('exec', container, 'python3', '-c',
+            "from pathlib import Path; Path('/appdata/media').write_text('preserve-downloads')")
         # Administrator changes approved fixed readiness probe to force a real
         # partially applied update failure. No change to image/mount authority.
         cfg['images'][repo]['healthcheck'] = ['python3', '-c', 'raise SystemExit(1)']
@@ -98,7 +102,10 @@ def main():
         task = call('apply', {'plan_id': call('plan', spec)['plan_id']})['task_id']
         assert finish(task) == 'recovery_required'
         assert call('status')['recovery_required']
-        assert data.read_text() == 'preserve-downloads'
+        container = service.docker('ps', '--quiet', '--filter',
+            'label=com.docker.compose.project=cdp-' + project).decode().strip()
+        assert service.docker('exec', container, 'python3', '-c',
+            "from pathlib import Path; print(Path('/appdata/media').read_text())").strip() == b'preserve-downloads'
         try:
             call('restart')
             raise AssertionError('recovery bypassed')

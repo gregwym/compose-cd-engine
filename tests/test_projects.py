@@ -313,5 +313,28 @@ class DurableTasks(unittest.TestCase):
         def owned(fd):
             actual = original_fstat(fd)
             return SimpleNamespace(st_uid=0, st_mode=actual.st_mode)
-        with patch('deployer.service.os.fstat', side_effect=owned), self.assertRaises(OSError):
+        with patch('deployer.service.os.fstat', side_effect=owned), self.assertRaises(ValueError):
+            self.service.provision_storage('test', spec(), self.cfg)
+
+    def test_existing_app_leaf_is_not_opened_or_traversed(self):
+        root = Path(self.cfg['storage']['config']['path'])
+        (root / 'test').mkdir()
+        leaf = root / 'test' / 'app'
+        leaf.mkdir(mode=0o750)
+        original_open, original_stat, original_fstat = os.open, os.stat, os.fstat
+        def open_parent(path, *args, **kwargs):
+            self.assertNotEqual(path, 'app', 'existing app leaf must not be opened')
+            return original_open(path, *args, **kwargs)
+        def owned(fd):
+            st = original_fstat(fd)
+            return SimpleNamespace(st_uid=0, st_mode=st.st_mode)
+        def app_stat(path, *args, **kwargs):
+            st = original_stat(path, *args, **kwargs)
+            if path == 'app':
+                self.assertFalse(kwargs['follow_symlinks'])
+                return SimpleNamespace(st_uid=10001, st_mode=st.st_mode)
+            return st
+        with patch('deployer.service.os.open', side_effect=open_parent), \
+             patch('deployer.service.os.stat', side_effect=app_stat), \
+             patch('deployer.service.os.fstat', side_effect=owned):
             self.service.provision_storage('test', spec(), self.cfg)

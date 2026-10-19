@@ -246,12 +246,16 @@ class Service:
                             created = True
                         except FileExistsError:
                             created = False
+                        if not created:
+                            # Runner drops DAC_OVERRIDE: an app-owned 0750 leaf
+                            # need not be readable by UID 0. Inspect only the
+                            # entry below the protected parent, never its data.
+                            st = os.stat(mount['slot'], dir_fd=projectfd, follow_symlinks=False)
+                            schema.check(stat.S_ISDIR(st.st_mode) and st.st_uid == store['uid'])
+                            continue
                         leaf = os.open(mount['slot'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=projectfd)
                         try:
-                            if created:
-                                os.fchown(leaf, store['uid'], store['gid'])
-                            else:
-                                schema.check(os.fstat(leaf).st_uid == store['uid'])
+                            os.fchown(leaf, store['uid'], store['gid'])
                         finally:
                             os.close(leaf)
                     finally:
