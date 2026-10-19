@@ -413,6 +413,17 @@ class Service:
         self.runner.write_json(directory / 'compose.json', compose)
         return directory
 
+    def verify_healthchecks(self, project, spec, cfg):
+        # Compose --wait is not sufficient evidence that the effective runtime
+        # probe is the current administrator-approved one.
+        for service, value in spec['services'].items():
+            ids = self.docker('ps', '--all', '--quiet', '--filter', 'label=com.docker.compose.project=cdp-' + project,
+                              '--filter', 'label=com.docker.compose.service=' + service).decode().split()
+            require(len(ids) == 1, 'readiness_configuration_mismatch')
+            actual = json.loads(self.docker('inspect', '--format', '{{json .Config.Healthcheck.Test}}', ids[0]))
+            expected = ['CMD', *cfg['images'][value['image'].split('@')[0]]['healthcheck']]
+            require(actual == expected, 'readiness_configuration_mismatch')
+
     def status(self, project):
         with self.db() as db:
             row = db.execute('SELECT revision,spec,recovery FROM projects WHERE id=?', (project,)).fetchone()
@@ -537,12 +548,17 @@ class Service:
                     self.compose(directory, project, 'up', '-d', '--no-build', '--pull', 'never',
                                  '--wait', '--wait-timeout', str(cfg['health_timeout']),
                                  timeout=cfg['health_timeout'] + 120)
+                    stage = 'readiness_configuration'
+                    self.verify_healthchecks(project, spec, cfg)
+                    stage = 'readiness'
+                    self.ready(project, sorted(spec['services']), cfg['health_timeout'])
                 else:
                     args = [op] + (['--no-deps'] if op == 'restart' else []) + sorted(spec['services'])
                     self.compose(directory, project, *args, timeout=120)
                     if op != 'stop':
                         # Compose wait is exit-oriented, so use the same proven
                         # fixed readiness checker as deployment for lifecycle.
+                        self.verify_healthchecks(project, spec, cfg)
                         self.ready(project, sorted(spec['services']), cfg['health_timeout'])
                 with self.db() as db:
                     if op == 'apply':
