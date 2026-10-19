@@ -103,6 +103,7 @@ class Service:
         cfg = schema.policy(trusted_json(self.policy_path))
         # Workspace/storage changes need administrator restart and mount review.
         schema.check(cfg['workspace'] == self.cfg['workspace'] and cfg['storage'] == self.cfg['storage'])
+        require(('authorization' in cfg) == ('authorization' in self.cfg), 'migration_required')
         schema.check(not require_enabled or cfg['enabled'])
         return cfg
 

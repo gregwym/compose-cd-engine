@@ -188,6 +188,7 @@ class GrantEnforcement(projects.DurableTasks):
         self.cfg['images']['example.invalid/team/app']['digests'] = ['a' * 64]
         self.cfg['authorization'] = {'socket': '/run/auth.sock', 'service_key': '/etc/service.key',
                                      'agents': {'openclaw': str(self.agent_key)}}
+        self.service = projects.Service('policy', self.runner)
         self.rpc_patch = patch('deployer.service.rpc.call', side_effect=lambda cfg, op, value: self.auth_store.rpc(op, value))
         self.rpc_patch.start()
 
