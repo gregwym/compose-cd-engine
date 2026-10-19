@@ -20,6 +20,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
+      - run: python3 -m pip install --require-hashes --only-binary=:all: -r requirements.txt
       - run: python3 -m unittest discover -s tests -v
       - run: python3 scripts/generate_workflows.py --check
       - run: python3 scripts/check_public_tree.py
@@ -91,7 +92,7 @@ jobs:
       - name: Smoke test packaged engine and tools
         run: |
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 receiver/receiver.py --help
-          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, runner.runner, management.gateway, management.broker, deployer.service'
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, verifier.provisioning, runner.runner, management.gateway, management.broker, deployer.service, authorization.server'
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
       - name: Exercise restricted management against disposable Docker services

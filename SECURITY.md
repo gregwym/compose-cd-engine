@@ -1,5 +1,22 @@
 # Security
 
+## Agent-native authorization
+
+The opt-in [v2 authorization model](docs/agent-authorization.md) separates agent
+HMAC identities, administrator Passkeys and private Runner service credentials.
+Only the trusted approval service issues/revokes grants, after transaction-bound
+WebAuthn user verification or an explicitly administrator-preauthorized sandbox.
+It never mounts Docker or application data. The Runner independently enforces
+policy/grants at execution; enabling v2 rejects legacy project bypasses. Legacy
+fixed targets require explicit disjoint administrator compatibility authorization.
+
+Do not share service keys, local enrollment tokens, administrator sessions or
+authorization SQLite files with agents. Restoring stale authorization backups
+can resurrect revoked privileges; disable execution and reconcile revocations
+before accepting a restore. Signed code with data access is still dangerous;
+Docker socket access remains host-admin-equivalent. CI software authenticators
+do not prove real iPhone, DSM ACL or production network compatibility.
+
 Report vulnerabilities privately via GitHub Security Advisories for this repository
 when available; do not put credentials, host inventory or exploitable production
 configuration in public issues. This early-stage engine has not received an

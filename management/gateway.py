@@ -12,9 +12,9 @@ from management.protocol import MAX_REQUEST, MAX_RESPONSE, ID, ACTIONS, authenti
 def load(path):
     cfg = trusted_json(path)
     if (not isinstance(cfg, dict) or not {'projects', 'secret_file', 'nonce_db'} <= set(cfg)
-            or set(cfg) - {'projects', 'secret_file', 'nonce_db', 'deployer'}):
+            or set(cfg) - {'projects', 'secret_file', 'nonce_db', 'deployer', 'agents', 'legacy_compat'}):
         raise ValueError('invalid gateway policy')
-    if not isinstance(cfg['projects'], dict) or (not cfg['projects'] and not cfg.get('deployer')):
+    if not isinstance(cfg['projects'], dict) or (not cfg['projects'] and not cfg.get('deployer') and not cfg.get('agents')):
         raise ValueError('no approved projects')
     for project, policy in cfg['projects'].items():
         if (not ID.fullmatch(project) or set(policy) != {'socket', 'actions'}
@@ -39,6 +39,15 @@ def load(path):
     secret = secret_path.read_bytes().strip()
     if len(secret) < 32:
         raise ValueError('short gateway secret')
+    if 'agents' in cfg:
+        from deployer.schema import name, check
+        check(isinstance(cfg['agents'], dict) and 1 <= len(cfg['agents']) <= 32)
+        for agent, keypath in cfg['agents'].items():
+            name(agent)
+            st = protected_file(keypath).stat()
+            check(not st.st_mode & 0o027 and len(Path(keypath).read_bytes().strip()) >= 32)
+        if cfg['projects'] and cfg.get('legacy_compat') is not True:
+            raise ValueError('explicit fixed legacy compatibility required')
     # Keep this DB on persistent gateway-only storage, never a shared inbox.
     if not Path(cfg['nonce_db']).is_absolute():
         raise ValueError('nonce database must be absolute')
@@ -62,8 +71,10 @@ class Gateway(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
+        from authorization.protocol import ROUTES, request as agent_request
+        v2 = self.path in ROUTES and 'agents' in self.cfg
         provisioning = self.path == '/v1/projects' and 'deployer' in self.cfg
-        if self.path != '/v1/manage' and not provisioning:
+        if self.path != '/v1/manage' and not provisioning and not v2:
             self.respond(404, {'status': 'not_found'})
             return
         try:
@@ -73,18 +84,26 @@ class Gateway(BaseHTTPRequestHandler):
                 raise ValueError('ambiguous framing')
             length = int(self.headers['Content-Length'])
             from deployer import schema
-            limit = schema.MAX_REQUEST if provisioning else MAX_REQUEST
+            limit = 60000 if v2 else (schema.MAX_REQUEST if provisioning else MAX_REQUEST)
             if not 0 < length <= limit:
                 raise ValueError('invalid size')
             self.connection.settimeout(5)
             raw = self.rfile.read(length)
             if len(raw) != length:
                 raise ValueError('truncated body')
-            value = authenticate(raw, self.headers['X-Management-Signature'], self.secret, self.cfg['nonce_db'],
-                                 validator=schema.request if provisioning else request,
+            secret = self.secret
+            if v2:
+                parsed = agent_request(raw)
+                if parsed['operation'] != ROUTES[self.path] or parsed['agent'] not in self.cfg['agents']:
+                    raise ValueError('invalid route or identity')
+                secret = protected_file(self.cfg['agents'][parsed['agent']]).read_bytes().strip()
+            elif 'agents' in self.cfg and (provisioning or self.cfg.get('legacy_compat') is not True):
+                raise ValueError('v2 required')
+            value = authenticate(raw, self.headers['X-Management-Signature'], secret, self.cfg['nonce_db'],
+                                 validator=agent_request if v2 else (schema.request if provisioning else request),
                                  limit=limit)
-            if provisioning:
-                if value['operation'] not in self.cfg['deployer']['operations']:
+            if provisioning or v2:
+                if not v2 and value['operation'] not in self.cfg['deployer']['operations']:
                     raise ValueError('not authorized')
                 from deployer.service import SOCKET
                 socket_path = SOCKET
@@ -103,7 +122,8 @@ class Gateway(BaseHTTPRequestHandler):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(10)
                 connection.connect(socket_path)
-                connection.sendall(json.dumps(value).encode() + b'\n')
+                wire = {'raw': raw.decode(), 'signature': self.headers['X-Management-Signature']} if v2 else value
+                connection.sendall(json.dumps(wire).encode() + b'\n')
                 result = json.loads(read_frame(connection, MAX_RESPONSE))
             self.respond(200, result)
         except (OSError, ValueError):

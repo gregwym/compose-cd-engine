@@ -1,0 +1,6 @@
+{
+  "projects": {},
+  "secret_file": "/etc/compose-cd/secrets/management.key",
+  "nonce_db": "/var/lib/compose-cd-management/nonces.sqlite",
+  "agents": {"openclaw": "/etc/compose-cd/agent-keys/openclaw.key"}
+}

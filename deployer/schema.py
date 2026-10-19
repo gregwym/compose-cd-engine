@@ -6,7 +6,8 @@ import re
 from pathlib import PurePosixPath
 
 MAX_REQUEST = 65536
-OPS = frozenset({'plan', 'apply', 'task', 'status', 'start', 'stop', 'restart'})
+OPS = frozenset({'plan', 'apply', 'task', 'status', 'start', 'stop', 'restart',
+                 'grant_request', 'grant_status', 'grants', 'projects', 'diagnose', 'retire'})
 NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 HEX = re.compile(r'[a-f0-9]{32}')
 IMAGE = re.compile(r'([a-z0-9][a-z0-9./_-]+)@sha256:([a-f0-9]{64})')
@@ -51,7 +52,14 @@ def request(raw):
     payload = value['payload']
     op = value['operation']
     if op == 'plan':
-        fields(payload, {'services'})
+        fields(payload, {'services'}, {'egress'})
+    elif op == 'grant_request':
+        fields(payload, {'plan_id', 'mode', 'lifetime'})
+        check(HEX.fullmatch(payload['plan_id']) and payload['mode'] in ('once', 'persistent', 'expiring'))
+        number(payload['lifetime'], 60, 31536000)
+    elif op == 'grant_status':
+        fields(payload, {'approval_id'})
+        check(HEX.fullmatch(payload['approval_id']))
     elif op in ('apply', 'task'):
         key = 'plan_id' if op == 'apply' else 'task_id'
         fields(payload, {key})
@@ -64,7 +72,7 @@ def request(raw):
 def policy(cfg):
     fields(cfg, {'workspace', 'storage', 'images', 'port_range', 'bind_ip',
                  'max_projects', 'max_services', 'max_memory_mb', 'max_cpus',
-                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'})
+                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'}, {'authorization', 'verification'})
     check(type(cfg['enabled']) is bool and type(cfg['allow_egress']) is bool)
     check(isinstance(cfg['operations'], list) and cfg['operations']
           and all(isinstance(x, str) and x in OPS for x in cfg['operations']))
@@ -88,9 +96,15 @@ def policy(cfg):
     for repo, image in cfg['images'].items():
         check(IMAGE.fullmatch(repo + '@sha256:' + 'a' * 64) is not None
               and '/' in repo and not any(x in ('', '.', '..') for x in repo.split('/')))
-        fields(image, {'digests', 'allow_unsigned', 'healthcheck', 'environment'})
+        fields(image, {'digests', 'allow_unsigned', 'healthcheck', 'environment'}, {'identity', 'issuer', 'platform'})
         # Unsigned upstream consumption must be an explicit administrator choice.
-        check(image['allow_unsigned'] is True)
+        check(type(image['allow_unsigned']) is bool)
+        if not image['allow_unsigned']:
+            check(set(('identity', 'issuer', 'platform')) <= set(image) and 'verification' in cfg)
+            check(isinstance(image['identity'], str) and image['identity'].startswith('https://github.com/')
+                  and '/.github/workflows/' in image['identity'] and '@refs/heads/' in image['identity'])
+            check(image['issuer'] == 'https://token.actions.githubusercontent.com')
+            check(image['platform'] in ('linux/amd64', 'linux/arm64'))
         check(isinstance(image['digests'], list) and all(
             isinstance(x, str) and re.fullmatch('[a-f0-9]{64}', x) for x in image['digests']))
         probe = image['healthcheck']
@@ -108,21 +122,48 @@ def policy(cfg):
                            ('max_memory_mb', 32, 65536), ('max_cpus', 1, 64),
                            ('max_pids', 16, 4096), ('health_timeout', 10, 1800)]:
         number(cfg[key], low, high)
+    for key in ('authorization', 'verification'):
+        if key in cfg:
+            item = cfg[key]
+            fields(item, {'socket', 'service_key'} | ({'agents'} if key == 'authorization' else set()),
+                   {'sandbox'} if key == 'authorization' else ())
+            for field in ('socket', 'service_key'):
+                check(isinstance(item[field], str) and item[field].startswith('/') and '..' not in PurePosixPath(item[field]).parts)
+            if key == 'authorization':
+                check(isinstance(item['agents'], dict) and 1 <= len(item['agents']) <= 32)
+                for agent, keypath in item['agents'].items():
+                    name(agent)
+                    check(isinstance(keypath, str) and keypath.startswith('/'))
+                # Authorization mode forbids broad unsigned exceptions.
+                check(all(not image['allow_unsigned'] or image['digests'] for image in cfg['images'].values()))
+                if 'sandbox' in item:
+                    profile = item['sandbox']
+                    fields(profile, {'repositories', 'memory_mb', 'cpus', 'max_services'})
+                    check(isinstance(profile['repositories'], list) and profile['repositories']
+                          and all(r in cfg['images'] and not cfg['images'][r]['allow_unsigned'] for r in profile['repositories']))
+                    number(profile['memory_mb'], 32, cfg['max_memory_mb'])
+                    number(profile['cpus'], 1, cfg['max_cpus'])
+                    number(profile['max_services'], 1, cfg['max_services'])
     return cfg
 
 
 def compile_project(project, spec, cfg):
     name(project)
-    fields(spec, {'services'})
+    fields(spec, {'services'}, {'egress'})
+    check(type(spec.get('egress', cfg['allow_egress'])) is bool)
+    check(not spec.get('egress', cfg['allow_egress']) or cfg['allow_egress'])
     check(isinstance(spec['services'], dict) and 1 <= len(spec['services']) <= cfg['max_services'])
     services, used_ports = {}, set()
     memory = cpus = 0
     for service, value in spec['services'].items():
         name(service)
-        fields(value, {'image', 'memory_mb', 'cpus'}, {'environment', 'mounts', 'ports'})
+        fields(value, {'image', 'memory_mb', 'cpus'}, {'environment', 'mounts', 'ports', 'signed_index'})
         match = IMAGE.fullmatch(value['image']) if isinstance(value['image'], str) else None
         check(match is not None and match[1] in cfg['images'])
         approved = cfg['images'][match[1]]
+        if 'signed_index' in value:
+            check(isinstance(value['signed_index'], str) and IMAGE.fullmatch(value['signed_index'])
+                  and value['signed_index'].split('@')[0] == match[1] and not approved['allow_unsigned'])
         check(not approved['digests'] or match[2] in approved['digests'])
         memory += number(value['memory_mb'], 32, cfg['max_memory_mb'])
         cpus += number(value['cpus'], 1, cfg['max_cpus'])
@@ -175,7 +216,7 @@ def compile_project(project, spec, cfg):
             'healthcheck': {'test': ['CMD', *[x.replace('$', '$$') for x in approved['healthcheck']]], 'interval': '10s',
                             'timeout': '5s', 'retries': 3, 'start_period': '20s'}}
     check(memory <= cfg['max_memory_mb'] and cpus <= cfg['max_cpus'])
-    return {'services': services, 'networks': {'default': {'internal': not cfg['allow_egress']}}}, {
+    return {'services': services, 'networks': {'default': {'internal': not spec.get('egress', cfg['allow_egress'])}}}, {
         'memory_mb': memory, 'cpus': cpus, 'ports': sorted(used_ports)}
 
 

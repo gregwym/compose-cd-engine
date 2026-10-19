@@ -19,3 +19,9 @@
 !management/*.py
 !deployer/
 !deployer/*.py
+!authorization/
+!authorization/*.py
+!authorization/*.html
+!authorization/*.css
+!authorization/*.js
+!requirements.txt

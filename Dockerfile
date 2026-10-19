@@ -20,6 +20,8 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 COPY --from=tools /cosign /usr/local/bin/cosign
 WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.txt
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app
 COPY receiver/ receiver/
 COPY verifier/ verifier/
@@ -27,6 +29,7 @@ COPY runner/ runner/
 COPY shared/ shared/
 COPY management/ management/
 COPY deployer/ deployer/
+COPY authorization/ authorization/
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/compose-cd-engine/
 COPY third_party/ /usr/share/doc/compose-cd-engine/third_party/
 USER 10001:10001

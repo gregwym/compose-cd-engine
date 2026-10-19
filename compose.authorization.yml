@@ -1,0 +1,53 @@
+# Opt-in only. Merge after management and provisioning overlays. See
+# docs/agent-authorization.md for independently provisioned identities and HTTPS.
+services:
+  runner:
+    environment:
+      CD_AUTHORIZATION_REQUIRED: "1"
+    group_add: ["${CD_APPROVAL_GID:-30004}", "${CD_VERIFICATION_GID:-30005}", "${CD_SECRET_GID:-30002}"]
+    volumes:
+      - ./approval-run:/run/compose-cd-approval:ro
+      - ./verification-run:/run/compose-cd-verification:ro
+      - ./secrets/approval-service.key:/etc/compose-cd/secrets/approval-service.key:ro
+      - ./secrets/verification-service.key:/etc/compose-cd/secrets/verification-service.key:ro
+      - ./agent-keys:/etc/compose-cd/agent-keys:ro
+  management:
+    volumes:
+      - ./agent-keys:/etc/compose-cd/agent-keys:ro
+  approval:
+    image: ${CD_ENGINE_IMAGE:?Set a verified immutable engine image}
+    restart: unless-stopped
+    command: [python3, -m, authorization.server]
+    user: "10004:${CD_APPROVAL_GID:-30004}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 96m
+    pids_limit: 32
+    networks: [caddy_net]
+    volumes:
+      - ./approval-policy:/etc/compose-cd/approval:ro
+      - ./approval-state:/var/lib/compose-cd-approval
+      - ./approval-run:/run/compose-cd-approval
+      - ./secrets/approval-service.key:/etc/compose-cd/secrets/approval-service.key:ro
+    tmpfs: [/tmp:size=4m,noexec,nosuid,nodev]
+  project-verifier:
+    image: ${CD_ENGINE_IMAGE:?Set a verified immutable engine image}
+    restart: unless-stopped
+    command: [python3, -m, verifier.provisioning]
+    user: "10005:${CD_VERIFICATION_GID:-30005}"
+    environment:
+      CD_PROVISIONER_VERIFY_POLICY: /etc/compose-cd/provisioning/policy.json
+      HOME: /tmp
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    pids_limit: 48
+    networks: [caddy_net]
+    volumes:
+      - ./provisioning-policy:/etc/compose-cd/provisioning:ro
+      - ./verification-run:/run/compose-cd-verification
+      - ./verification-state:/var/lib/compose-cd-verification
+      - ./secrets/verification-service.key:/etc/compose-cd/secrets/verification-service.key:ro
+    tmpfs: [/tmp:size=32m,noexec,nosuid,nodev]
