@@ -143,6 +143,8 @@ class DurableTasks(unittest.TestCase):
         plan = self.plan()
         task = self.apply(plan)
         self.assertEqual(self.apply(plan), task)
+        with self.service.lock():
+            self.assertEqual(self.apply(plan), task)
         self.run_job()
         self.assertEqual(self.apply(plan), task)
         self.assertEqual(self.task(task)['status'], 'success')

@@ -148,6 +148,15 @@ class Service:
                 require(row is not None)
             self.authorize(agent, project, None, json.loads(row[0]), cfg, 'diagnose')
             return self.diagnose(project)
+        if op == 'apply':
+            # Idempotent task lookup must not contend with a deployment holding
+            # the global mutation lock for minutes. This path never executes.
+            with self.db() as db:
+                row = db.execute('SELECT p.task,a.agent FROM plans p LEFT JOIN plan_auth a ON p.id=a.id WHERE p.id=? AND p.project=?',
+                                 (payload['plan_id'], project)).fetchone()
+            if row and row[0]:
+                require(not agent or row[1] == agent)
+                return {'status': 'accepted', 'task_id': row[0]}
         with self.lock():
             cfg = self.policy(require_enabled=op != 'stop')
             with self.db() as db:
