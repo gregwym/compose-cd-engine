@@ -71,6 +71,15 @@ different repositories are **not** claimed atomic or mutually compatible.
 Existing service sets cannot be silently reduced. Partial mutation latches
 recovery, never restores data or reports a fictitious rollback.
 
+For coordinated application images, the administrator may configure
+`release_groups: [["app", "worker"]]`. If any named member is declared, every
+member is required even on first creation; Verifier requires all members signed
+from the same source and revision. Third-party databases can remain independently
+pinned services outside this coordinated build group. Without such a trusted
+group declaration, the engine cannot infer an upstream application's mandatory
+service list; do not claim automatic completeness discovery. Deployment is still
+not an atomic database transaction, even for a complete verified group.
+
 ## Administrator installation (manual, not performed by agents)
 
 Start from the provisioning installation and same-absolute-path mounts in
@@ -172,6 +181,9 @@ guarded across restart. No automatic retry of an unknown lifecycle operation.
 
 ## API transport
 
+Machine-readable request schemas and endpoints: [OpenAPI v2](openapi-v2.json).
+Policy-dependent restrictions are stricter than generic JSON schema limits.
+
 Agent calls use POST for reads as well as mutations so the existing HMAC scheme
 can bind exact body bytes, identity, request nonce and timestamp without query
 canonicalization ambiguities. This is a deliberate refinement of the suggested
@@ -207,8 +219,6 @@ policy/spec hashes. No environment values or host storage paths are returned.
 are `GET /api/data` (authenticated grants/requests/credentials/audit), and
 `POST /api/begin`, `/api/finish` for transaction-bound ceremonies. They are not
 agent endpoints; forwarding `approved: true` never authorizes anything.
-
-## Residual risk and validation boundary
 
 ## OpenClaw / Telegram continuation
 
@@ -275,6 +285,33 @@ Containers still share the host kernel; this is not a VM security boundary.
 
 ## Residual risk and validation boundary
 
+### Restricted operational behavior
+
+Diagnostics expose only known service lifecycle state, exit code, bounded
+restart count, health/readiness, numeric memory/CPU percentages and the last
+task's enumerated failure stage/category. No free-form health output, logs,
+environment variables, mount paths, argv, arbitrary inspect JSON or application
+data are returned. Diagnostics themselves require a matching Grant operation.
+
+`retire` requires its own approved operation. It stops/removes only containers
+selected by the project namespace, without Docker's volume-removal flag. It
+retains bind-mounted application data, grant/audit/history and network metadata.
+Retired resources cannot be silently restarted; an authorized new apply is
+required. This is resource cleanup, **not deletion of an application's data**.
+The engine does not prune unrelated networks/images/volumes or administer backups.
+
+Crash reconciliation changes in-flight mutations to `outcome_unknown` and keeps
+the recovery guard. Audit delivery uses a durable local outbox and idempotent
+insertion into the administrator's audit database, including unknown outcomes.
+There is no general automatic stateful repair or database downgrade. Read-only
+polls and exact-plan idempotent request/apply may be retried within client limits;
+a failed preflight can use a new plan after the actionable problem is resolved.
+The engine does not retry partially applied stateful work.
+
+Plan results distinguish `invalid_configuration`, `forbidden_by_policy`,
+`insufficient_resources`, `needs_approval`, `authorized`, `stale_request`, and
+`recovery_required`. Detailed internal exceptions remain withheld.
+
 Runner's Docker socket remains **host-admin-equivalent**. Grant checks constrain
 inputs, not a compromised Runner or approval process. Signed agent-controlled
 code with writable NAS mounts can corrupt data, and with egress can disclose it.
@@ -291,3 +328,10 @@ usage or application integration. Before NAS acceptance, manually verify those
 properties, real Passkey enrollment/approval/revocation, persistent state across
 restarts, AutoBangumi/downloader readiness and preserved disposable media. Do
 not attach real media/photos/backups to make automated tests pass.
+
+For a repeatable mobile UI check, install Playwright only in a development
+environment, install its Chromium browser, and run
+`PYTHONPATH=. python3 scripts/smoke_approval_browser.py`. It uses a disposable
+localhost TLS certificate and Chromium's virtual authenticator for genuine
+browser registration/assertion ceremonies, review/approval and revocation.
+It does not enroll an owner credential or test physical Safari/Face ID.

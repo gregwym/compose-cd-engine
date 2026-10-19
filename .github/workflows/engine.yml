@@ -68,6 +68,25 @@ jobs:
                       assert not mount.get('read_only', False)
           assert not cfg['services']['management'].get('ports')
           PY
+      - name: Validate approval and verification isolation
+        env:
+          CD_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: |
+          docker compose -f compose.yml -f compose.management.yml -f compose.provisioning.yml -f compose.authorization.yml config --format json > /tmp/authorization.json
+          python3 - <<'PY'
+          import json
+          cfg = json.load(open('/tmp/authorization.json'))
+          assert cfg['services']['runner']['network_mode'] == 'none'
+          for name in ('approval', 'project-verifier', 'management'):
+              service = cfg['services'][name]
+              assert not service.get('ports')
+              assert not any(v.get('source') == '/var/run/docker.sock' for v in service.get('volumes', []))
+          mounts = {name: {v['target'] for v in service.get('volumes', [])} for name, service in cfg['services'].items()}
+          assert '/var/lib/compose-cd-approval' not in mounts['runner']
+          assert '/run/compose-cd-approval' not in mounts['management']
+          assert '/etc/compose-cd/agent-keys' not in mounts['approval']
+          assert '/var/lib/compose-cd/state' not in mounts['approval']
+          PY
   image:
     needs: validate
     runs-on: ubuntu-latest
@@ -110,6 +129,26 @@ jobs:
             -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
             -v /run/compose-project-smoke:/run/compose-project-smoke \
             -v "$PWD/scripts/smoke_projects.py:/integration/smoke.py:ro" \
+            compose-cd-engine:test python3 /integration/smoke.py
+      - name: Exercise full authorization transport with disposable Docker
+        if: github.event_name == 'pull_request'
+        run: |
+          sudo install -d -m 700 /run/compose-project-smoke
+          docker run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --user 0:0 --tmpfs /tmp:size=64m \
+            -e CD_DISPOSABLE_CI=1 -e CD_AUTH_SMOKE=1 -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /run/compose-project-smoke:/run/compose-project-smoke \
+            -v "$PWD/scripts/smoke_projects.py:/integration/smoke.py:ro" \
+            -v "$PWD/scripts/auth_smoke_adapter.py:/integration/auth_smoke_adapter.py:ro" \
+            -v "$PWD/scripts/agent.py:/app/scripts/agent.py:ro" \
+            -v "$PWD/tests:/integration/tests:ro" \
+            compose-cd-engine:test python3 /integration/smoke.py
+      - name: Verify public signed provisioning release independently (no Docker socket)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm --read-only --cap-drop ALL --user 0:0 --tmpfs /tmp:size=64m --tmpfs /run:size=4m,mode=0755 \
+            -e CD_DISPOSABLE_CI=1 -e HOME=/tmp \
+            -v "$PWD/scripts/smoke_signed_provisioning.py:/integration/smoke.py:ro" \
+            -v "$PWD/examples/agent-deployer-policy.json:/integration/policy.json:ro" \
             compose-cd-engine:test python3 /integration/smoke.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         if: github.event_name != 'pull_request'

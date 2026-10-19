@@ -39,6 +39,27 @@ function button(parent, title, action) {
   const node = text(parent, 'button', title);
   node.onclick = () => run(async () => { node.disabled = true; try { await action(); } finally { node.disabled = false; } });
 }
+function disclosure(parent, title) {
+  const node = document.createElement('details'); text(node, 'summary', title); parent.append(node); return node;
+}
+function permissions(parent, scope) {
+  if ('egress' in scope) text(parent, 'p', scope.egress ? 'Network: outbound access allowed.' : 'Network: outbound access blocked.');
+  if (scope.operations) text(parent, 'p', 'Allowed actions: ' + scope.operations.join(', '));
+  for (const [name, service] of Object.entries(scope.services || {})) {
+    text(parent, 'h4', name);
+    if (service.repository) text(parent, 'p', 'Image source: ' + service.repository);
+    if (service.identity) text(parent, 'p', 'Trusted build: ' + service.identity);
+    if (service.unsigned_digest) text(parent, 'p', 'Unsigned exception, exact digest: ' + service.unsigned_digest, 'sensitive');
+    if (service.memory_mb !== undefined || service.cpus !== undefined) text(parent, 'p',
+      `Resource ceiling: ${service.memory_mb === undefined ? 'unchanged memory' : service.memory_mb + ' MiB RAM'}; ${service.cpus === undefined ? 'unchanged CPU' : service.cpus + ' CPU(s)'}.`);
+    if (service.environment && service.environment.length) text(parent, 'p', 'Configurable settings: ' + service.environment.join(', ') + ' (values withheld)');
+    for (const mount of service.mounts || []) text(parent, 'p',
+      `Storage: ${mount.storage} / ${mount.slot} → ${mount.target} · ${mount.read_only ? 'read only' : 'READ AND WRITE'}`, mount.read_only ? '' : 'sensitive');
+    if (service.mounts && !service.mounts.length) text(parent, 'p', 'Storage: no mounted data.');
+    for (const port of service.ports || []) text(parent, 'p', `Inbound: ${port.published}/${port.protocol} → application port ${port.target}`);
+    if (service.ports && !service.ports.length) text(parent, 'p', 'Inbound: no published ports.');
+  }
+}
 async function refresh() {
   const session = await api('session'); csrf = session.csrf;
   el('login').hidden = session.authenticated;
@@ -55,9 +76,14 @@ async function refresh() {
     text(box, 'p', `Requesting agent: ${request.agent}. Authorization: ${request.mode}${request.mode === 'expiring' ? ' for ' + request.lifetime + ' seconds' : ''}.`);
     text(box, 'p', 'New / expanded permissions grant application code the access shown below. Writable mounts can modify data; egress can transfer it.', 'sensitive');
     const existing = data.grants.filter(g => g.project === request.project && g.agent === request.agent && g.status === 'active');
-    text(box, 'h4', 'Existing permissions'); text(box, 'pre', JSON.stringify(existing.map(g => g.scope), null, 2));
-    text(box, 'h4', 'Requested permissions (authoritative, complete scope)'); text(box, 'pre', JSON.stringify(request.scope, null, 2));
-    text(box, 'details', `Plan: ${request.plan_id}\nSpecification: ${request.spec_hash}\nPolicy: ${request.policy}`);
+    const previous = disclosure(box, 'Existing permissions');
+    if (!existing.length) text(previous, 'p', 'No active project authorization.');
+    for (const grant of existing) permissions(previous, grant.scope);
+    text(box, 'h4', 'New or expanded permissions');
+    if (Object.keys(request.grant_diff).length) permissions(box, request.grant_diff);
+    else text(box, 'p', 'No expansion compared with an active authorization.');
+    const complete = disclosure(box, 'Full requested authorization'); permissions(complete, request.scope);
+    text(disclosure(box, 'Request verification details'), 'pre', `Plan: ${request.plan_id}\nSpecification: ${request.spec_hash}\nPolicy: ${request.policy}`);
     if (request.status === 'pending') {
       button(box, 'Approve these permissions with Passkey', async () => { await ceremony('approve', request.request_id); await refresh(); });
       button(box, 'Deny with Passkey', async () => { await ceremony('deny', request.request_id); await refresh(); });
@@ -68,13 +94,13 @@ async function refresh() {
     const box = document.createElement('article'); el('content').append(box);
     text(box, 'h3', `${grant.project} · ${grant.status}`);
     text(box, 'p', `Agent: ${grant.agent}. Approved by: ${grant.admin}. ${grant.mode}; expires: ${grant.expires ? new Date(grant.expires * 1000).toLocaleString() : 'never'}.`);
-    text(box, 'pre', JSON.stringify(grant.scope, null, 2));
+    permissions(disclosure(box, 'Granted permissions'), grant.scope);
     if (grant.status === 'active') button(box, 'Revoke with Passkey', async () => { await ceremony('revoke', grant.id); await refresh(); });
   }
-  text(el('content'), 'h2', 'Passkeys');
-  for (const credential of data.credentials) button(el('content'), 'Remove Passkey ' + credential.id.slice(0, 12), async () => { await ceremony('remove', credential.id); await refresh(); });
-  text(el('content'), 'p', 'Adding another Passkey requires a new local administrator enrollment code. The last Passkey cannot be removed here.');
-  text(el('content'), 'h2', 'Recent audit events'); text(el('content'), 'pre', JSON.stringify(data.audit, null, 2));
+  const settings = disclosure(el('content'), 'Manage Passkeys');
+  for (const credential of data.credentials) button(settings, 'Remove Passkey ' + credential.id.slice(0, 12), async () => { await ceremony('remove', credential.id); await refresh(); });
+  text(settings, 'p', 'Adding another Passkey requires a new local administrator enrollment code. The last Passkey cannot be removed here.');
+  text(disclosure(el('content'), 'Recent audit events'), 'pre', JSON.stringify(data.audit, null, 2));
 }
 el('login').onclick = () => run(async () => { await ceremony('login'); await refresh(); });
 el('enroll').onclick = () => run(async () => { const token = el('token').value; el('token').value = ''; await ceremony('enroll', '', token); await refresh(); });

@@ -22,6 +22,7 @@ class ProvisioningVerifier:
         require(schema.fingerprint(cfg) == value['policy'], 'verification_failed')
         schema.compile_project(value['project'], value['spec'], cfg)
         revisions = {}
+        sources = {}
         results = {}
         for service, item in value['spec']['services'].items():
             repo, digest = item['image'].split('@')
@@ -46,7 +47,12 @@ class ProvisioningVerifier:
             # Images built from the same source must agree across service images.
             require(source not in revisions or revisions[source] == revision, 'verification_failed')
             revisions[source] = revision
+            sources[service] = source
             results[service] = 'signed_platform_digest'
+        for group in cfg.get('release_groups', []):
+            if set(group).intersection(value['spec']['services']):
+                require(all(s in sources for s in group) and len({sources[s] for s in group}) == 1,
+                        'verification_failed')
         return {'status': 'verified', 'services': results}
 
 
@@ -54,7 +60,14 @@ def main():
     os.umask(0o077)
     path = os.environ['CD_PROVISIONER_VERIFY_POLICY']
     cfg = schema.policy(trusted_json(path))['verification']
-    rpc.serve(cfg, ProvisioningVerifier(path).dispatch,
+    verifier = ProvisioningVerifier(path)
+    def dispatch(op, value):
+        try:
+            return verifier.dispatch(op, value)
+        except Exception:
+            from authorization.scope import Denied
+            raise Denied('verification_failed') from None
+    rpc.serve(cfg, dispatch,
               str(Path(os.environ.get('CD_VERIFY_STATE', '/var/lib/compose-cd-verification')) / 'nonces.sqlite'))
 
 

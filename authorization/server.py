@@ -75,6 +75,9 @@ class Handler(BaseHTTPRequestHandler):
                               | {'scope': json.loads(r['scope'])} for r in db.execute('SELECT * FROM grants ORDER BY rowid DESC LIMIT 100')]
                     credentials = [{'id': bytes(r['id']).hex()} for r in db.execute('SELECT id FROM credentials WHERE admin=? AND active=1', (session['admin'],))]
                     events = [dict(r) for r in db.execute('SELECT * FROM audit ORDER BY seq DESC LIMIT 100')]
+                for request in requests:
+                    request['grant_diff'] = self.server.store.check({'agent': request['agent'], 'project': request['project'],
+                        'plan': request['plan_id'], 'policy': request['policy'], 'scope': request['scope']})['grant_diff']
                 return self.send(200, {'requests': requests, 'grants': grants, 'credentials': credentials, 'audit': events})
             require(self.path in ('/', '/enroll') or (self.path.startswith('/requests/') and schema.HEX.fullmatch(self.path[10:])))
             self.send(200, Path(__file__).with_name('index.html').read_bytes(), 'text/html; charset=utf-8')
