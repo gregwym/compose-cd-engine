@@ -105,7 +105,7 @@ class Service:
         # Workspace/storage changes need administrator restart and mount review.
         schema.check(cfg['workspace'] == self.cfg['workspace'] and cfg['storage'] == self.cfg['storage'])
         require(('authorization' in cfg) == ('authorization' in self.cfg), 'migration_required')
-        schema.check(not require_enabled or cfg['enabled'])
+        require(not require_enabled or cfg['enabled'], 'forbidden_by_policy')
         return cfg
 
     def dispatch(self, value, agent=None):
@@ -117,7 +117,7 @@ class Service:
         require('authorization' not in cfg or agent in cfg['authorization']['agents'], 'v2_required')
         if 'authorization' not in cfg:
             require(agent is None, 'authorization_not_configured')
-        schema.check(op in cfg['operations'])
+        require(op in cfg['operations'], 'forbidden_by_policy')
         if agent:
             with self.db() as db:
                 owner = db.execute('SELECT agent FROM project_auth WHERE id=?', (project,)).fetchone()
