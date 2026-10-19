@@ -103,6 +103,16 @@ def policy(cfg):
         fields(item, {'path', 'shared', 'uid', 'gid'})
         p = PurePosixPath(item['path'])
         check(p.is_absolute() and '..' not in p.parts and str(p) != '/')
+        # Administrator alias configuration is trusted, but ordinary project
+        # grants must never expose known host control planes or engine secrets.
+        check(str(p) != '/run')
+        for prefix in ('/etc', '/proc', '/sys', '/dev', '/var/run', '/root',
+                       '/bin', '/sbin', '/lib', '/lib64', '/usr',
+                       '/run/docker', '/run/containerd', '/run/compose-cd',
+                       '/run/compose-cd-approval', '/run/compose-cd-management', '/run/compose-cd-verification',
+                       '/var/lib/compose-cd', '/var/lib/compose-cd-approval',
+                       '/var/lib/compose-cd-management', '/var/lib/compose-cd-verification'):
+            check(str(p) != prefix and not str(p).startswith(prefix + '/'))
         check(type(item['shared']) is bool)
         number(item['uid'], 1, 2147483647)
         number(item['gid'], 1, 2147483647)

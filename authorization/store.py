@@ -32,6 +32,14 @@ class Store:
         try:
             with db:
                 db.execute('BEGIN IMMEDIATE')
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit'").fetchone():
+                    now = int(time.time())
+                    for row in db.execute("SELECT id FROM grants WHERE status='active' AND expires>0 AND expires<=?", (now,)).fetchall():
+                        db.execute("UPDATE grants SET status='expired',revision=revision+1 WHERE id=?", (row[0],))
+                        self.event(db, 'system', 'grant_expired', row[0])
+                    for row in db.execute("SELECT id FROM requests WHERE status='pending' AND expires<=?", (now,)).fetchall():
+                        db.execute("UPDATE requests SET status='expired' WHERE id=?", (row[0],))
+                        self.event(db, 'system', 'request_expired', row[0])
                 yield db
         finally:
             db.close()

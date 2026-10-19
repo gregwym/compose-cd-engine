@@ -144,7 +144,7 @@ jobs:
       - name: Verify public signed provisioning release independently (no Docker socket)
         if: github.event_name == 'pull_request'
         run: |
-          docker run --rm --read-only --cap-drop ALL --user 0:0 --tmpfs /tmp:size=64m --tmpfs /run:size=4m \
+          docker run --rm --read-only --cap-drop ALL --user 0:0 --tmpfs /tmp:size=64m --tmpfs /run:size=4m,mode=0755 \
             -e CD_DISPOSABLE_CI=1 -e HOME=/tmp \
             -v "$PWD/scripts/smoke_signed_provisioning.py:/integration/smoke.py:ro" \
             -v "$PWD/examples/agent-deployer-policy.json:/integration/policy.json:ro" \

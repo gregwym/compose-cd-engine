@@ -172,6 +172,9 @@ guarded across restart. No automatic retry of an unknown lifecycle operation.
 
 ## API transport
 
+Machine-readable request schemas and endpoints: [OpenAPI v2](openapi-v2.json).
+Policy-dependent restrictions are stricter than generic JSON schema limits.
+
 Agent calls use POST for reads as well as mutations so the existing HMAC scheme
 can bind exact body bytes, identity, request nonce and timestamp without query
 canonicalization ambiguities. This is a deliberate refinement of the suggested
@@ -316,3 +319,10 @@ usage or application integration. Before NAS acceptance, manually verify those
 properties, real Passkey enrollment/approval/revocation, persistent state across
 restarts, AutoBangumi/downloader readiness and preserved disposable media. Do
 not attach real media/photos/backups to make automated tests pass.
+
+For a repeatable mobile UI check, install Playwright only in a development
+environment, install its Chromium browser, and run
+`PYTHONPATH=. python3 scripts/smoke_approval_browser.py`. It uses a disposable
+localhost TLS certificate and Chromium's virtual authenticator for genuine
+browser registration/assertion ceremonies, review/approval and revocation.
+It does not enroll an owner credential or test physical Safari/Face ID.

@@ -299,7 +299,8 @@ class Service:
         return self.dispatch({k: v for k, v in value.items() if k not in ('agent', 'version')}, agent=value['agent'])
 
     def capacity(self, db, project, spec, cfg):
-        specs = {row[0]: json.loads(row[1]) for row in db.execute('SELECT id,spec FROM projects')}
+        specs = {row[0]: json.loads(row[1]) for row in db.execute(
+            'SELECT p.id,p.spec FROM projects p LEFT JOIN project_lifecycle l ON p.id=l.id WHERE COALESCE(l.retired,0)=0')}
         # A queued update reserves its new resources/ports as well.
         for row in db.execute("SELECT project,spec FROM tasks WHERE state IN ('queued','running')"):
             specs[row[0]] = json.loads(row[1])
