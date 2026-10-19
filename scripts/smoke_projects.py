@@ -116,7 +116,8 @@ def main():
         if adapter:
             adapter.approve(update_plan)
         task = call('apply', {'plan_id': update_plan})['task_id']
-        assert finish(task) == 'recovery_required'
+        state = finish(task)
+        assert state == 'recovery_required', call('task', {'task_id': task})
         assert call('status')['recovery_required']
         container = service.docker('ps', '--quiet', '--filter',
             'label=com.docker.compose.project=cdp-' + project).decode().strip()
