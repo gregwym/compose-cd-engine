@@ -556,15 +556,18 @@ def main():
         raise SystemExit("Docker socket or CLI unavailable")
     os.umask(0o077)
     configs = [load_target(p) for p in sorted(TARGET_DIR.glob("*.json"))]
-    if os.environ.get('CD_AUTHORIZATION_REQUIRED') == '1':
-        # Fixed legacy configurations are a separate, explicit administrator
-        # compatibility grant. Never let their naming overlap provisioned projects.
-        if any(x.get('legacy_authorized') is not True or x['project'].startswith('cdp-') for x in configs):
-            raise SystemExit('explicit disjoint fixed legacy authorization required')
+    provisioner = None
     if os.environ.get('CD_DEPLOYER_POLICY'):
         import sys
         from deployer.service import Service
         provisioner = Service(os.environ['CD_DEPLOYER_POLICY'], sys.modules[__name__])
+    if os.environ.get('CD_AUTHORIZATION_REQUIRED') == '1' or (provisioner and 'authorization' in provisioner.cfg):
+        os.environ['CD_AUTHORIZATION_REQUIRED'] = '1'
+        # Fixed legacy configurations are a separate, explicit administrator
+        # compatibility grant. Never let their naming overlap provisioned projects.
+        if any(x.get('legacy_authorized') is not True or x['project'].startswith('cdp-') for x in configs):
+            raise SystemExit('explicit disjoint fixed legacy authorization required')
+    if provisioner:
         threading.Thread(target=provisioner.serve, daemon=True).start()
     if not configs:
         print("idle: no fixed deployment targets configured", flush=True)

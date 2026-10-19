@@ -103,6 +103,7 @@ class Service:
         cfg = schema.policy(trusted_json(self.policy_path))
         # Workspace/storage changes need administrator restart and mount review.
         schema.check(cfg['workspace'] == self.cfg['workspace'] and cfg['storage'] == self.cfg['storage'])
+        require(('authorization' in cfg) == ('authorization' in self.cfg), 'migration_required')
         schema.check(not require_enabled or cfg['enabled'])
         return cfg
 
@@ -147,6 +148,15 @@ class Service:
                 require(row is not None)
             self.authorize(agent, project, None, json.loads(row[0]), cfg, 'diagnose')
             return self.diagnose(project)
+        if op == 'apply':
+            # Idempotent task lookup must not contend with a deployment holding
+            # the global mutation lock for minutes. This path never executes.
+            with self.db() as db:
+                row = db.execute('SELECT p.task,a.agent FROM plans p LEFT JOIN plan_auth a ON p.id=a.id WHERE p.id=? AND p.project=?',
+                                 (payload['plan_id'], project)).fetchone()
+            if row and row[0]:
+                require(not agent or row[1] == agent)
+                return {'status': 'accepted', 'task_id': row[0]}
         with self.lock():
             cfg = self.policy(require_enabled=op != 'stop')
             with self.db() as db:
@@ -481,7 +491,7 @@ class Service:
                     schema.check(all(re.fullmatch('[a-f0-9]{64}', x) for x in ids))
                     if ids:
                         if auth:
-                            self.authorize(auth[0], project, auth[1], spec, self.policy(require_enabled=op != 'stop'), op)
+                            require(self.authorize(auth[0], project, auth[1], spec, self.policy(require_enabled=op != 'stop'), op) == auth[2])
                         self.docker('stop', '--time', '10', *ids)
                         if op == 'retire':
                             # No --volumes, no image/network pruning, no storage deletion.
@@ -501,7 +511,7 @@ class Service:
                     for args in [('ps', '--all', '--quiet'), ('network', 'ls', '--quiet')]:
                         schema.check(not self.docker(*args, '--filter', 'label=com.docker.compose.project=cdp-' + project).strip())
                 if auth:
-                    self.authorize(auth[0], project, auth[1], spec, self.policy(), op)
+                    require(self.authorize(auth[0], project, auth[1], spec, self.policy(), op) == auth[2])
                 stage = 'storage'
                 self.provision_storage(project, spec, cfg)
                 directory = self.working_directory(task, compose)
@@ -515,7 +525,7 @@ class Service:
                 # immediately before mutating containers, not just at dequeue.
                 require(schema.fingerprint(self.policy()) == policy_hash, 'stale_request')
                 if auth:
-                    self.authorize(auth[0], project, auth[1], spec, cfg, op)
+                    require(self.authorize(auth[0], project, auth[1], spec, cfg, op) == auth[2])
                 if op != 'stop':
                     # A crash after recreation might leave migrated data. Latch
                     # BEFORE invoking Docker, never automatically restore data.
