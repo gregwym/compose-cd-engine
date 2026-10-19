@@ -136,6 +136,8 @@ class DurableTasks(unittest.TestCase):
     def run_job(self, failure=None):
         with patch.object(self.service, 'docker', return_value=b''), \
              patch.object(self.service, 'provision_storage'), \
+             patch.object(self.service, 'verify_healthchecks'), \
+             patch.object(self.service, 'ready'), \
              patch.object(self.service, 'compose', side_effect=failure):
             self.service.run_one()
 
