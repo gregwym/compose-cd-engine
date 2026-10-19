@@ -69,6 +69,7 @@ class Service:
                   created INTEGER, updated INTEGER, spec TEXT, policy TEXT, base INTEGER);
                 CREATE TABLE IF NOT EXISTS plan_auth(id TEXT PRIMARY KEY, agent TEXT, scope TEXT, spec_hash TEXT);
                 CREATE TABLE IF NOT EXISTS project_auth(id TEXT PRIMARY KEY, agent TEXT);
+                CREATE TABLE IF NOT EXISTS project_lifecycle(id TEXT PRIMARY KEY, retired INTEGER);
                 CREATE TABLE IF NOT EXISTS task_auth(id TEXT PRIMARY KEY, agent TEXT, plan TEXT, grant_id TEXT);
                 CREATE TABLE IF NOT EXISTS task_detail(id TEXT PRIMARY KEY, stage TEXT, category TEXT);
                 CREATE TABLE IF NOT EXISTS audit_outbox(id INTEGER PRIMARY KEY, value TEXT, sent INTEGER DEFAULT 0);
@@ -155,10 +156,14 @@ class Service:
                     schema.check(not busy)
                     try:
                         compose, budget = schema.compile_project(project, payload, cfg)
+                    except schema.PolicyViolation:
+                        raise Denied('forbidden_by_policy') from None
+                    except schema.InsufficientResources:
+                        raise Denied('insufficient_resources') from None
                     except (ValueError, TypeError, KeyError):
                         if agent:
                             # Policy and schema denial never expose input values.
-                            raise Denied('invalid_or_forbidden_configuration') from None
+                            raise Denied('invalid_configuration') from None
                         raise
                     try:
                         self.capacity(db, project, payload, cfg)
@@ -210,6 +215,8 @@ class Service:
                         db.execute('INSERT INTO projects VALUES (?,0,?,0)', (project, row[3]))
                 else:
                     schema.check(current is not None and not busy)
+                    retired = db.execute('SELECT retired FROM project_lifecycle WHERE id=?', (project,)).fetchone()
+                    require(op not in ('start', 'restart') or not retired or not retired[0], 'project_retired')
                     require(op == 'stop' or not current[2], 'recovery_required')
                     spec = json.loads(current[1])
                     if op != 'stop':
@@ -402,6 +409,7 @@ class Service:
         with self.db() as db:
             row = db.execute('SELECT revision,spec,recovery FROM projects WHERE id=?', (project,)).fetchone()
             last = db.execute('SELECT id,state,operation FROM tasks WHERE project=? ORDER BY rowid DESC LIMIT 1', (project,)).fetchone()
+            retired = db.execute('SELECT retired FROM project_lifecycle WHERE id=?', (project,)).fetchone()
         schema.check(row is not None)
         # Only known service names and enumerated states cross the API.
         names = set(json.loads(row[1])['services'])
@@ -413,6 +421,7 @@ class Service:
             if len(parts) == 2 and parts[0] in names and parts[1] in ('created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'):
                 states[parts[0]] = parts[1]
         return {'status': 'success', 'revision': row[0], 'recovery_required': bool(row[2]),
+                'lifecycle': 'retired' if retired and retired[0] else 'active',
                 'services': states, 'last_task': dict(zip(('task_id', 'status', 'operation'), last)) if last else None}
 
     def diagnose(self, project):
@@ -426,6 +435,7 @@ class Service:
                 continue
             raw = self.docker('inspect', '--format',
                 '{{.State.ExitCode}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}', ids[0]).decode().split()
+            details[service] = {'state': result['services'][service]}
             if len(raw) == 3 and raw[0].isdigit() and raw[1].isdigit() and raw[2] in ('none', 'starting', 'healthy', 'unhealthy'):
                 details[service] = {'exit_code': min(int(raw[0]), 255), 'restart_count': min(int(raw[1]), 1000000),
                                     'health': raw[2], 'readiness': 'passed' if raw[2] == 'healthy' else 'not_ready'}
@@ -483,6 +493,9 @@ class Service:
                             self.docker('rm', *ids)
                     with self.db() as db:
                         db.execute("UPDATE tasks SET state='success',updated=? WHERE id=?", (int(time.time()), task))
+                        if op == 'retire':
+                            db.execute('INSERT OR REPLACE INTO project_lifecycle VALUES (?,1)', (project,))
+                        db.execute('INSERT OR REPLACE INTO task_detail VALUES (?,?,?)', (task, 'complete', 'none'))
                         self.audit_task(db, task, 'success')
                     return True
                 compose, _ = schema.compile_project(project, spec, cfg)
@@ -532,6 +545,7 @@ class Service:
                 with self.db() as db:
                     if op == 'apply':
                         db.execute('UPDATE projects SET revision=revision+1,spec=?,recovery=0 WHERE id=?', (spec_json, project))
+                        db.execute('INSERT OR REPLACE INTO project_lifecycle VALUES (?,0)', (project,))
                     elif op != 'stop':
                         db.execute('UPDATE projects SET recovery=0 WHERE id=?', (project,))
                     db.execute("UPDATE tasks SET state='success',updated=? WHERE id=?", (int(time.time()), task))

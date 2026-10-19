@@ -13,6 +13,24 @@ HEX = re.compile(r'[a-f0-9]{32}')
 IMAGE = re.compile(r'([a-z0-9][a-z0-9./_-]+)@sha256:([a-f0-9]{64})')
 
 
+class PolicyViolation(ValueError):
+    pass
+
+
+class InsufficientResources(ValueError):
+    pass
+
+
+def allowed(ok):
+    if not ok:
+        raise PolicyViolation('forbidden_by_policy')
+
+
+def resources(ok):
+    if not ok:
+        raise InsufficientResources('insufficient_resources')
+
+
 def check(ok):
     if not ok:
         raise ValueError('invalid declaration or policy')
@@ -151,34 +169,38 @@ def compile_project(project, spec, cfg):
     name(project)
     fields(spec, {'services'}, {'egress'})
     check(type(spec.get('egress', cfg['allow_egress'])) is bool)
-    check(not spec.get('egress', cfg['allow_egress']) or cfg['allow_egress'])
-    check(isinstance(spec['services'], dict) and 1 <= len(spec['services']) <= cfg['max_services'])
+    allowed(not spec.get('egress', cfg['allow_egress']) or cfg['allow_egress'])
+    check(isinstance(spec['services'], dict) and len(spec['services']) >= 1)
+    resources(len(spec['services']) <= cfg['max_services'])
     services, used_ports = {}, set()
     memory = cpus = 0
     for service, value in spec['services'].items():
         name(service)
         fields(value, {'image', 'memory_mb', 'cpus'}, {'environment', 'mounts', 'ports', 'signed_index'})
         match = IMAGE.fullmatch(value['image']) if isinstance(value['image'], str) else None
-        check(match is not None and match[1] in cfg['images'])
+        check(match is not None)
+        allowed(match[1] in cfg['images'])
         approved = cfg['images'][match[1]]
         if 'signed_index' in value:
             check(isinstance(value['signed_index'], str) and IMAGE.fullmatch(value['signed_index'])
                   and value['signed_index'].split('@')[0] == match[1] and not approved['allow_unsigned'])
-        check(not approved['digests'] or match[2] in approved['digests'])
-        memory += number(value['memory_mb'], 32, cfg['max_memory_mb'])
-        cpus += number(value['cpus'], 1, cfg['max_cpus'])
+        allowed(not approved['digests'] or match[2] in approved['digests'])
+        memory += number(value['memory_mb'], 32, 65536)
+        cpus += number(value['cpus'], 1, 64)
+        resources(value['memory_mb'] <= cfg['max_memory_mb'] and value['cpus'] <= cfg['max_cpus'])
         environment = value.get('environment', {})
         check(isinstance(environment, dict) and len(environment) <= 64)
         for key, val in environment.items():
-            check(key in approved['environment'] and isinstance(val, str)
-                  and len(val) <= 4096 and '\x00' not in val)
+            allowed(key in approved['environment'])
+            check(isinstance(val, str) and len(val) <= 4096 and '\x00' not in val)
         # Compose interpolation is disabled by escaping every literal dollar.
         env = {k: v.replace('$', '$$') for k, v in environment.items()}
         mounts, targets = [], set()
         check(isinstance(value.get('mounts', []), list) and len(value.get('mounts', [])) <= 16)
         for mount in value.get('mounts', []):
             fields(mount, {'storage', 'slot', 'target', 'read_only'})
-            check(mount['storage'] in cfg['storage'] and type(mount['read_only']) is bool)
+            check(type(mount['read_only']) is bool)
+            allowed(mount['storage'] in cfg['storage'])
             store = cfg['storage'][mount['storage']]
             name(mount['slot'])
             target = PurePosixPath(mount['target'])
@@ -201,7 +223,8 @@ def compile_project(project, spec, cfg):
         check(isinstance(value.get('ports', []), list) and len(value.get('ports', [])) <= 16)
         for port in value.get('ports', []):
             fields(port, {'published', 'target', 'protocol'})
-            number(port['published'], *cfg['port_range'])
+            number(port['published'], 1, 65535)
+            allowed(cfg['port_range'][0] <= port['published'] <= cfg['port_range'][1])
             number(port['target'], 1, 65535)
             check(port['protocol'] in ('tcp', 'udp'))
             key = (port['published'], port['protocol'])
@@ -215,7 +238,7 @@ def compile_project(project, spec, cfg):
             'logging': {'driver': 'json-file', 'options': {'max-size': '10m', 'max-file': '2'}},
             'healthcheck': {'test': ['CMD', *[x.replace('$', '$$') for x in approved['healthcheck']]], 'interval': '10s',
                             'timeout': '5s', 'retries': 3, 'start_period': '20s'}}
-    check(memory <= cfg['max_memory_mb'] and cpus <= cfg['max_cpus'])
+    resources(memory <= cfg['max_memory_mb'] and cpus <= cfg['max_cpus'])
     return {'services': services, 'networks': {'default': {'internal': not spec.get('egress', cfg['allow_egress'])}}}, {
         'memory_mb': memory, 'cpus': cpus, 'ports': sorted(used_ports)}
 

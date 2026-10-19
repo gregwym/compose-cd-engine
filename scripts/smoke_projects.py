@@ -50,6 +50,10 @@ def main():
         'health_timeout': 60, 'enabled': True, 'allow_egress': False,
         'operations': ['plan', 'apply', 'task', 'status', 'start', 'stop', 'restart']}
     policy = root / 'policy.json'
+    adapter = None
+    if os.environ.get('CD_AUTH_SMOKE') == '1':
+        from auth_smoke_adapter import Adapter
+        adapter = Adapter(root, cfg, project)
     policy.write_text(json.dumps(cfg))
     policy.chmod(0o600)
     service = Service(str(policy), runner)
@@ -68,20 +72,29 @@ def main():
         return original(directory, project, *args, **kwargs)
     service.compose = compose
     def call(op, payload=None):
+        if adapter:
+            return adapter.call(op, payload)
         return service.dispatch({'project': project, 'operation': op, 'payload': payload or {},
                                  'request_id': uuid.uuid4().hex, 'timestamp': int(time.time())})
     def finish(task):
+        if adapter:
+            return adapter.finish(task)
         assert service.run_one()
         return call('task', {'task_id': task})['status']
     spec = {'services': {'web': {'image': image, 'memory_mb': 64, 'cpus': 1,
         'environment': {'PRIVATE_TEST': 'do-not-return-${UNSET}'},
         'mounts': [{'storage': 'config', 'slot': 'web', 'target': '/appdata', 'read_only': False}], 'ports': []}}}
+    if adapter:
+        adapter.bind(service)
     try:
         subprocess.run(docker + ['run', '-d', '--name', unrelated, '--network', 'none', label],
                        check=True, stdout=subprocess.DEVNULL)
         before = subprocess.check_output(docker + ['inspect', '--format', '{{.Id}} {{.State.StartedAt}}', unrelated])
         plan = call('plan', spec)
         assert 'do-not-return' not in json.dumps(plan)
+        if adapter:
+            assert plan['status'] == 'needs_approval'
+            adapter.approve(plan['plan_id'])
         task = call('apply', {'plan_id': plan['plan_id']})['task_id']
         assert call('apply', {'plan_id': plan['plan_id']})['task_id'] == task
         assert finish(task) == 'success'
@@ -99,7 +112,10 @@ def main():
         cfg['images'][repo]['healthcheck'] = ['python3', '-c', 'raise SystemExit(1)']
         cfg['health_timeout'] = 10
         policy.write_text(json.dumps(cfg))
-        task = call('apply', {'plan_id': call('plan', spec)['plan_id']})['task_id']
+        update_plan = call('plan', spec)['plan_id']
+        if adapter:
+            adapter.approve(update_plan)
+        task = call('apply', {'plan_id': update_plan})['task_id']
         assert finish(task) == 'recovery_required'
         assert call('status')['recovery_required']
         container = service.docker('ps', '--quiet', '--filter',
@@ -107,14 +123,27 @@ def main():
         assert service.docker('exec', container, 'python3', '-c',
             "from pathlib import Path; print(Path('/appdata/media').read_text())").strip() == b'preserve-downloads'
         try:
-            call('restart')
+            result = call('restart')
+            if adapter:
+                assert result['status'] == 'recovery_required'
+                raise ValueError('expected guarded recovery')
             raise AssertionError('recovery bypassed')
         except ValueError:
             pass
         assert finish(call('stop')['task_id']) == 'success'
         assert subprocess.check_output(docker + ['inspect', '--format', '{{.Id}} {{.State.StartedAt}}', unrelated]) == before
+        if adapter:
+            # Revocation blocks future lifecycle actions but does not implicitly
+            # delete project state, containers or the preserved bind-mounted media.
+            for grant in call('grants')['grants']:
+                adapter.browser.ceremony('revoke', grant['grant_id'])
+            assert call('stop')['status'] == 'not_authorized'
+            print('Real authorization transport passed: HTTP/HMAC principal, Runner Unix socket, isolated approval RPC, software-Passkey enrollment/approval, protected storage gate, lifecycle, policy reauthorization and revocation. Physical Safari and DSM are NOT covered.')
         print('Project Docker integration passed: create, idempotent apply, health, lifecycle, real failed update, recovery latch, preserved media and unrelated uptime. Local-image adapter; registry verification is NOT covered by this smoke.')
     finally:
+        service.stopped.set()
+        if adapter:
+            adapter.close()
         # Only disposable, random CI names; never cleanup NAS or user data.
         subprocess.run(docker + ['rm', '-f', unrelated], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for directory in (root / 'private').iterdir():

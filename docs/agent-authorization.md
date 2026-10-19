@@ -208,8 +208,6 @@ are `GET /api/data` (authenticated grants/requests/credentials/audit), and
 `POST /api/begin`, `/api/finish` for transaction-bound ceremonies. They are not
 agent endpoints; forwarding `approved: true` never authorizes anything.
 
-## Residual risk and validation boundary
-
 ## OpenClaw / Telegram continuation
 
 Use the existing OpenClaw Telegram conversation, not another bot or a chat-based
@@ -274,6 +272,33 @@ longer qualifies and needs a fresh explicit human request, if Policy permits it.
 Containers still share the host kernel; this is not a VM security boundary.
 
 ## Residual risk and validation boundary
+
+### Restricted operational behavior
+
+Diagnostics expose only known service lifecycle state, exit code, bounded
+restart count, health/readiness, numeric memory/CPU percentages and the last
+task's enumerated failure stage/category. No free-form health output, logs,
+environment variables, mount paths, argv, arbitrary inspect JSON or application
+data are returned. Diagnostics themselves require a matching Grant operation.
+
+`retire` requires its own approved operation. It stops/removes only containers
+selected by the project namespace, without Docker's volume-removal flag. It
+retains bind-mounted application data, grant/audit/history and network metadata.
+Retired resources cannot be silently restarted; an authorized new apply is
+required. This is resource cleanup, **not deletion of an application's data**.
+The engine does not prune unrelated networks/images/volumes or administer backups.
+
+Crash reconciliation changes in-flight mutations to `outcome_unknown` and keeps
+the recovery guard. Audit delivery uses a durable local outbox and idempotent
+insertion into the administrator's audit database, including unknown outcomes.
+There is no general automatic stateful repair or database downgrade. Read-only
+polls and exact-plan idempotent request/apply may be retried within client limits;
+a failed preflight can use a new plan after the actionable problem is resolved.
+The engine does not retry partially applied stateful work.
+
+Plan results distinguish `invalid_configuration`, `forbidden_by_policy`,
+`insufficient_resources`, `needs_approval`, `authorized`, `stale_request`, and
+`recovery_required`. Detailed internal exceptions remain withheld.
 
 Runner's Docker socket remains **host-admin-equivalent**. Grant checks constrain
 inputs, not a compromised Runner or approval process. Signed agent-controlled

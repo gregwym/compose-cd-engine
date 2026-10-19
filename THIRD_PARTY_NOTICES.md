@@ -1,5 +1,12 @@
 # Third-party components
 
+The approval service additionally installs hash-pinned python-fido2
+(BSD-2-Clause), cryptography (Apache-2.0 OR BSD-3-Clause), cffi (MIT), and
+pycparser (BSD-3-Clause). Their wheel distributions include upstream license
+texts in installed package metadata. Exact versions and distribution hashes
+are recorded in requirements.txt. No private authenticator key is generated
+or stored by the approval service.
+
 The Python engine source is MIT-licensed. The image also contains separately
 licensed software; the engine license does not relicense those components.
 
