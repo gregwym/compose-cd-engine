@@ -28,14 +28,14 @@ def request(raw):
     return value
 
 
-def authenticate(raw, signature, secret, database, now=None):
+def authenticate(raw, signature, secret, database, now=None, validator=request, limit=MAX_REQUEST):
     # The signature binds exact body bytes including action/project/time/nonce.
-    if len(secret) < 32 or len(raw) > MAX_REQUEST:
+    if len(secret) < 32 or len(raw) > limit:
         raise ValueError('invalid authentication input')
     expected = 'sha256=' + hmac.new(secret, raw, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         raise ValueError('authentication failed')
-    value = request(raw)
+    value = validator(raw)
     now = int(time.time()) if now is None else now
     if abs(now - value['timestamp']) > 60:
         raise ValueError('expired request')

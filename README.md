@@ -94,3 +94,9 @@ in this repository deliberately enables no project jobs.
 [MIT](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for separately
 licensed image components. Issues and contributions are welcome; see
 [contributing](CONTRIBUTING.md). This is not an independently audited product.
+# Optional NAS project creation
+
+For new project creation and changes without SSH, see
+[policy-constrained project provisioning](docs/project-provisioning.md).
+It is opt-in, uses a closed JSON schema rather than uploaded Compose, and does
+not alter existing fixed-target CD or promote production engine images.

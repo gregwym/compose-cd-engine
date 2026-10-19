@@ -1,0 +1,26 @@
+{
+  "workspace": "/volume1/compose-deployer-private",
+  "storage": {
+    "config": {"path": "/volume1/compose-app-config", "shared": false, "uid": 10001, "gid": 10001},
+    "downloads": {"path": "/volume1/compose-downloads", "shared": true, "uid": 10001, "gid": 10001}
+  },
+  "images": {
+    "example.invalid/owner/app": {
+      "digests": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      "allow_unsigned": true,
+      "healthcheck": ["/usr/local/bin/application-readiness-check"],
+      "environment": ["TZ", "APP_PASSWORD"]
+    }
+  },
+  "port_range": [20000, 20099],
+  "bind_ip": "192.168.50.10",
+  "max_projects": 8,
+  "max_services": 8,
+  "max_memory_mb": 2048,
+  "max_cpus": 4,
+  "max_pids": 128,
+  "health_timeout": 180,
+  "enabled": false,
+  "allow_egress": false,
+  "operations": ["plan", "apply", "task", "status", "start", "stop", "restart"]
+}
