@@ -481,7 +481,7 @@ class Service:
                     schema.check(all(re.fullmatch('[a-f0-9]{64}', x) for x in ids))
                     if ids:
                         if auth:
-                            self.authorize(auth[0], project, auth[1], spec, self.policy(require_enabled=op != 'stop'), op)
+                            require(self.authorize(auth[0], project, auth[1], spec, self.policy(require_enabled=op != 'stop'), op) == auth[2])
                         self.docker('stop', '--time', '10', *ids)
                         if op == 'retire':
                             # No --volumes, no image/network pruning, no storage deletion.
@@ -501,7 +501,7 @@ class Service:
                     for args in [('ps', '--all', '--quiet'), ('network', 'ls', '--quiet')]:
                         schema.check(not self.docker(*args, '--filter', 'label=com.docker.compose.project=cdp-' + project).strip())
                 if auth:
-                    self.authorize(auth[0], project, auth[1], spec, self.policy(), op)
+                    require(self.authorize(auth[0], project, auth[1], spec, self.policy(), op) == auth[2])
                 stage = 'storage'
                 self.provision_storage(project, spec, cfg)
                 directory = self.working_directory(task, compose)
@@ -515,7 +515,7 @@ class Service:
                 # immediately before mutating containers, not just at dequeue.
                 require(schema.fingerprint(self.policy()) == policy_hash, 'stale_request')
                 if auth:
-                    self.authorize(auth[0], project, auth[1], spec, cfg, op)
+                    require(self.authorize(auth[0], project, auth[1], spec, cfg, op) == auth[2])
                 if op != 'stop':
                     # A crash after recreation might leave migrated data. Latch
                     # BEFORE invoking Docker, never automatically restore data.
