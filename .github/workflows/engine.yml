@@ -47,6 +47,26 @@ jobs:
           assert len(app) == 1 and app[0]['read_only']
           assert not any(v['target'].startswith('/volume1/') and v not in app for v in mounts)
           PY
+      - name: Validate optional provisioning mounts
+        env:
+          CD_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          CD_DEPLOYER_WORKSPACE: /volume1/compose-deployer-private
+          CD_DEPLOYER_CONFIG_ROOT: /volume1/compose-app-config
+          CD_DEPLOYER_DOWNLOAD_ROOT: /volume1/compose-downloads
+        run: |
+          docker compose -f compose.yml -f compose.management.yml -f compose.provisioning.yml -f examples/compose.provisioning.synology.yml config --format json > /tmp/provisioning.json
+          python3 - <<'PY'
+          import json, os
+          cfg = json.load(open('/tmp/provisioning.json'))
+          assert cfg['services']['runner']['network_mode'] == 'none'
+          roots = {os.environ[k] for k in ('CD_DEPLOYER_WORKSPACE', 'CD_DEPLOYER_CONFIG_ROOT', 'CD_DEPLOYER_DOWNLOAD_ROOT')}
+          for name, service in cfg['services'].items():
+              for mount in service.get('volumes', []):
+                  if mount.get('target') in roots:
+                      assert name == 'runner' and mount['source'] == mount['target']
+                      assert not mount.get('read_only', False)
+          assert not cfg['services']['management'].get('ports')
+          PY
   image:
     needs: validate
     runs-on: ubuntu-latest

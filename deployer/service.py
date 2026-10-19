@@ -299,6 +299,10 @@ class Service:
                 with self.db() as db:
                     current = db.execute('SELECT revision,recovery FROM projects WHERE id=?', (project,)).fetchone()
                     schema.check(current is not None and current[0] == base and (op == 'stop' or not current[1]))
+                    if op != 'stop':
+                        # Earlier queued updates can fail, leaving larger old
+                        # resource/port reservations than assumed at enqueue.
+                        self.capacity(db, project, spec, cfg)
                 if op == 'stop':
                     ids = self.docker('ps', '--all', '--quiet', '--no-trunc', '--filter',
                                       'label=com.docker.compose.project=cdp-' + project).decode().split()

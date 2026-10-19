@@ -68,6 +68,10 @@ media deletion, `down`, prune, volume removal or project deletion API is added.
    `/etc/compose-cd/provisioning/policy.json` read-only; root owns the file and
    ancestors, mode 0644. Never mount workspace into apps/Gateway/Verifier/Receiver.
    Runner keeps `network_mode: none`; Docker daemon performs image pulls.
+   `examples/compose.provisioning.synology.yml` supplies the three path mounts for
+   the example policy via `CD_DEPLOYER_WORKSPACE`, `CD_DEPLOYER_CONFIG_ROOT` and
+   `CD_DEPLOYER_DOWNLOAD_ROOT`. Pre-create them; Compose must not silently create
+   missing host roots. This adds no new resident container.
 6. Add to private Gateway policy (keep existing project entries if needed):
 
    ```json

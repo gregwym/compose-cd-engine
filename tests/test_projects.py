@@ -170,6 +170,18 @@ class DurableTasks(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.plan(item, project='other')
 
+    def test_worker_rechecks_resources_after_preceding_update_failed(self):
+        task = self.apply()
+        item = spec()
+        item['services']['app']['ports'] = []
+        item['services']['app']['memory_mb'] = 512
+        with self.service.db() as db:
+            db.execute('INSERT INTO projects VALUES (?,1,?,0)', ('other', json.dumps(item)))
+        with patch.object(self.service, 'compose', side_effect=AssertionError('Docker touched')) as compose:
+            self.service.run_one()
+            compose.assert_not_called()
+        self.assertEqual(self.task(task)['status'], 'failed')
+
     def test_task_lookup_is_project_scoped_and_has_no_spec(self):
         task = self.apply()
         with self.assertRaises(ValueError):

@@ -17,3 +17,5 @@
 
 !management/
 !management/*.py
+!deployer/
+!deployer/*.py
