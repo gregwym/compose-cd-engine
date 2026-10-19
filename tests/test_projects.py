@@ -136,13 +136,26 @@ class DurableTasks(unittest.TestCase):
     def run_job(self, failure=None):
         with patch.object(self.service, 'docker', return_value=b''), \
              patch.object(self.service, 'provision_storage'), \
+             patch.object(self.service, 'verify_healthchecks'), \
+             patch.object(self.service, 'ready'), \
              patch.object(self.service, 'compose', side_effect=failure):
             self.service.run_one()
+
+    def test_compose_success_cannot_hide_wrong_runtime_readiness_probe(self):
+        task = self.apply()
+        with patch.object(self.service, 'docker', side_effect=[b'', b'', b'id', b'["CMD","/bin/false"]']), \
+             patch.object(self.service, 'provision_storage'), patch.object(self.service, 'compose'):
+            self.service.run_one()
+        result = self.task(task)
+        self.assertEqual(result['status'], 'recovery_required')
+        self.assertEqual(result['category'], 'readiness_configuration_mismatch')
 
     def test_apply_is_idempotent_beyond_request_nonce(self):
         plan = self.plan()
         task = self.apply(plan)
         self.assertEqual(self.apply(plan), task)
+        with self.service.lock():
+            self.assertEqual(self.apply(plan), task)
         self.run_job()
         self.assertEqual(self.apply(plan), task)
         self.assertEqual(self.task(task)['status'], 'success')

@@ -14,6 +14,9 @@ HEALTH = {'healthy', 'unhealthy', 'starting', 'none'}
 
 
 def validate_policy(cfg):
+    if os.environ.get('CD_AUTHORIZATION_REQUIRED') == '1':
+        if cfg.get('legacy_authorized') is not True or cfg.get('project', '').startswith('cdp-'):
+            raise ValueError('fixed legacy authorization required')
     policy = cfg['management']
     if (not isinstance(policy, dict) or set(policy) != {'socket', 'actions', 'verifier_socket'}
             or not isinstance(policy['socket'], str)

@@ -25,7 +25,7 @@ def load_target(path):
         raise ValueError("target policy must be a root-owned, non-writable regular file")
     cfg = json.loads(path.read_text())
     required = {"id", "socket", "strategy", "compose_dir", "project", "files", "services"}
-    optional = {"health_timeout", "healthcheck", "rollback", "snapshot_paths", "snapshot_retention", "snapshot_exclude", "candidate_file", "allowed_images", "observe", "healthchecks", "tcp_checks", "same_digest", "privacy_scan", "management", "require_readiness"}
+    optional = {"health_timeout", "healthcheck", "rollback", "snapshot_paths", "snapshot_retention", "snapshot_exclude", "candidate_file", "allowed_images", "observe", "healthchecks", "tcp_checks", "same_digest", "privacy_scan", "management", "require_readiness", "legacy_authorized"}
     if not isinstance(cfg, dict) or set(cfg) - required - optional or not required <= set(cfg):
         raise ValueError("invalid target keys")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", cfg["id"]):
@@ -556,10 +556,18 @@ def main():
         raise SystemExit("Docker socket or CLI unavailable")
     os.umask(0o077)
     configs = [load_target(p) for p in sorted(TARGET_DIR.glob("*.json"))]
+    provisioner = None
     if os.environ.get('CD_DEPLOYER_POLICY'):
         import sys
         from deployer.service import Service
         provisioner = Service(os.environ['CD_DEPLOYER_POLICY'], sys.modules[__name__])
+    if os.environ.get('CD_AUTHORIZATION_REQUIRED') == '1' or (provisioner and 'authorization' in provisioner.cfg):
+        os.environ['CD_AUTHORIZATION_REQUIRED'] = '1'
+        # Fixed legacy configurations are a separate, explicit administrator
+        # compatibility grant. Never let their naming overlap provisioned projects.
+        if any(x.get('legacy_authorized') is not True or x['project'].startswith('cdp-') for x in configs):
+            raise SystemExit('explicit disjoint fixed legacy authorization required')
+    if provisioner:
         threading.Thread(target=provisioner.serve, daemon=True).start()
     if not configs:
         print("idle: no fixed deployment targets configured", flush=True)

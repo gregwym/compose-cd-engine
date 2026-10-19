@@ -56,6 +56,9 @@ def resolve(image, ref, platform='linux/amd64'):
     return digest, doc
 
 def labels(image, manifest_doc):
+    return config_document(image, manifest_doc).get('config',{}).get('Labels',{}) or {}
+
+def config_document(image, manifest_doc):
     digest = manifest_doc['config']['digest']
     if not DIGEST.fullmatch(digest):
         raise ValueError('bad config digest')
@@ -63,4 +66,4 @@ def labels(image, manifest_doc):
     raw, _ = request(f'https://{host}/v2/{name}/blobs/{digest}', {'Authorization':'Bearer '+auth(image)})
     if 'sha256:'+hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError('config digest mismatch')
-    return json.loads(raw).get('config',{}).get('Labels',{}) or {}
+    return json.loads(raw)

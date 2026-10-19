@@ -1,0 +1,7 @@
+{
+  "state": "/var/lib/compose-cd-approval",
+  "origin": "https://deployer.example.ts.net",
+  "rp_id": "deployer.example.ts.net",
+  "socket": "/run/compose-cd-approval/approval.sock",
+  "service_key": "/etc/compose-cd/secrets/approval-service.key"
+}

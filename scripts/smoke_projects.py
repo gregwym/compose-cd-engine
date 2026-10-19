@@ -100,7 +100,8 @@ def main():
         cfg['health_timeout'] = 10
         policy.write_text(json.dumps(cfg))
         task = call('apply', {'plan_id': call('plan', spec)['plan_id']})['task_id']
-        assert finish(task) == 'recovery_required'
+        state = finish(task)
+        assert state == 'recovery_required', call('task', {'task_id': task})
         assert call('status')['recovery_required']
         container = service.docker('ps', '--quiet', '--filter',
             'label=com.docker.compose.project=cdp-' + project).decode().strip()
