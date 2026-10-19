@@ -109,6 +109,12 @@ class SandboxAndOperations(auth.GrantEnforcement):
             with self.assertRaises(ValueError):
                 schema.policy(cfg)
 
+    def test_live_policy_edit_cannot_downgrade_to_legacy_authentication(self):
+        del self.cfg['authorization']
+        with self.assertRaises(Denied) as error:
+            self.service.dispatch(projects.message('plan', projects.spec()))
+        self.assertEqual(error.exception.category, 'migration_required')
+
 
 def load_tests(loader, tests, pattern):
     # The base regressions already run once with grants in test_authorization.

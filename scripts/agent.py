@@ -156,8 +156,8 @@ class Workflow:
                 return 0 if status == 'success' else 1
             if status in ('planned', 'authorized', 'accepted'):
                 continue
-            if not follow or status not in ('authorization_required', 'waiting_for_authorization', 'queued', 'running', 'transport_not_confirmed'):
-                return 75 if status in ('authorization_required', 'waiting_for_authorization', 'queued', 'running') else 1
+            if not follow or status not in ('authorization_required', 'waiting_for_authorization', 'queued', 'running', 'transport_not_confirmed', 'busy'):
+                return 75 if status in ('authorization_required', 'waiting_for_authorization', 'queued', 'running', 'busy') else 1
             if failures >= 3 or time.monotonic() >= deadline:
                 return 75
             time.sleep(min(interval, max(0, deadline - time.monotonic())))
@@ -195,8 +195,9 @@ def main():
         schema.check(spec is None and args.id is None)
         payload = {}
     # Never retry non-idempotent lifecycle mutations automatically.
-    print(schema.canonical(client.call(args.operation, payload)))
-    return 0
+    result = client.call(args.operation, payload)
+    print(schema.canonical(result))
+    return 0 if (not result.get('status') or result['status'] in ('success', 'authorized', 'needs_approval', 'accepted', 'queued', 'running', 'pending', 'approved')) else 1
 
 
 if __name__ == '__main__':

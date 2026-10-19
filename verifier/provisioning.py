@@ -54,7 +54,14 @@ def main():
     os.umask(0o077)
     path = os.environ['CD_PROVISIONER_VERIFY_POLICY']
     cfg = schema.policy(trusted_json(path))['verification']
-    rpc.serve(cfg, ProvisioningVerifier(path).dispatch,
+    verifier = ProvisioningVerifier(path)
+    def dispatch(op, value):
+        try:
+            return verifier.dispatch(op, value)
+        except Exception:
+            from authorization.scope import Denied
+            raise Denied('verification_failed') from None
+    rpc.serve(cfg, dispatch,
               str(Path(os.environ.get('CD_VERIFY_STATE', '/var/lib/compose-cd-verification')) / 'nonces.sqlite'))
 
 
