@@ -1,7 +1,7 @@
 # Third-party components
 
 The approval service additionally installs hash-pinned python-fido2
-(BSD-2-Clause), cryptography (Apache-2.0 OR BSD-3-Clause), cffi (MIT), and
+(BSD-2-Clause core, Apache-2.0 HID components and MPL-2.0 public suffix data), cryptography (Apache-2.0 OR BSD-3-Clause), cffi (MIT), and
 pycparser (BSD-3-Clause). Their wheel distributions include upstream license
 texts in installed package metadata. Exact versions and distribution hashes
 are recorded in requirements.txt. No private authenticator key is generated

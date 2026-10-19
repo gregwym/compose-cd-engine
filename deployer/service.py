@@ -414,6 +414,13 @@ class Service:
                 finally:
                     os.close(rootfd)
 
+    def working_directory(self, task, compose):
+        directory = self.root / task
+        directory.mkdir(mode=0o700)
+        # Private atomic replacement supplied by the existing runner helper.
+        self.runner.write_json(directory / 'compose.json', compose)
+        return directory
+
     def verify_healthchecks(self, project, spec, cfg):
         # Compose --wait is not sufficient evidence that the effective runtime
         # probe is the current administrator-approved one.
@@ -424,13 +431,6 @@ class Service:
             actual = json.loads(self.docker('inspect', '--format', '{{json .Config.Healthcheck.Test}}', ids[0]))
             expected = ['CMD', *cfg['images'][value['image'].split('@')[0]]['healthcheck']]
             require(actual == expected, 'readiness_configuration_mismatch')
-
-    def working_directory(self, task, compose):
-        directory = self.root / task
-        directory.mkdir(mode=0o700)
-        # Private atomic replacement supplied by the existing runner helper.
-        self.runner.write_json(directory / 'compose.json', compose)
-        return directory
 
     def status(self, project):
         with self.db() as db:

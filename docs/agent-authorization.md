@@ -17,7 +17,7 @@ current Policy with a live Grant before enqueue, dequeue, storage preparation,
 and container mutation. A task records the particular Grant used; replacing it
 does not resurrect a queued task authorized by a revoked Grant.
 
-We use [python-fido2 2.0.0](https://developers.yubico.com/python-fido2/API_Documentation/_modules/fido2/server.html)
+We use [python-fido2 2.2.1](https://developers.yubico.com/python-fido2/API_Documentation/_modules/fido2/server.html)
 for [WebAuthn](https://www.w3.org/TR/webauthn-3/) verification, not custom
 signature parsing. Dependencies are pinned with hashes. Challenges require user
 verification, exact origin and RP ID, and bind an immutable server-side action,
