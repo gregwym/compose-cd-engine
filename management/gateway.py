@@ -6,14 +6,15 @@ import sqlite3
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from receiver.receiver import BoundedHTTPServer
-from management.protocol import MAX_REQUEST, MAX_RESPONSE, ID, ACTIONS, authenticate, trusted_json, protected_file, read_frame
+from management.protocol import MAX_REQUEST, MAX_RESPONSE, ID, ACTIONS, authenticate, trusted_json, protected_file, read_frame, request
 
 
 def load(path):
     cfg = trusted_json(path)
-    if not isinstance(cfg, dict) or set(cfg) != {'projects', 'secret_file', 'nonce_db'}:
+    if (not isinstance(cfg, dict) or not {'projects', 'secret_file', 'nonce_db'} <= set(cfg)
+            or set(cfg) - {'projects', 'secret_file', 'nonce_db', 'deployer'}):
         raise ValueError('invalid gateway policy')
-    if not isinstance(cfg['projects'], dict) or not cfg['projects']:
+    if not isinstance(cfg['projects'], dict) or (not cfg['projects'] and not cfg.get('deployer')):
         raise ValueError('no approved projects')
     for project, policy in cfg['projects'].items():
         if (not ID.fullmatch(project) or set(policy) != {'socket', 'actions'}
@@ -23,6 +24,13 @@ def load(path):
                 or not isinstance(policy['actions'], list) or not policy['actions']
                 or not set(policy['actions']) <= ACTIONS):
             raise ValueError('invalid gateway project')
+    if 'deployer' in cfg:
+        from deployer.schema import OPS
+        policy = cfg['deployer']
+        if (not isinstance(policy, dict) or set(policy) != {'operations'}
+                or not isinstance(policy['operations'], list) or not policy['operations']
+                or not all(isinstance(x, str) and x in OPS for x in policy['operations'])):
+            raise ValueError('invalid deployer policy')
     secret_path = protected_file(cfg['secret_file'])
     st = secret_path.lstat()
     if (secret_path.is_symlink() or not secret_path.is_file() or st.st_uid != 0
@@ -54,7 +62,8 @@ class Gateway(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
-        if self.path != '/v1/manage':
+        provisioning = self.path == '/v1/projects' and 'deployer' in self.cfg
+        if self.path != '/v1/manage' and not provisioning:
             self.respond(404, {'status': 'not_found'})
             return
         try:
@@ -63,16 +72,27 @@ class Gateway(BaseHTTPRequestHandler):
                     or self.headers.get('Transfer-Encoding')):
                 raise ValueError('ambiguous framing')
             length = int(self.headers['Content-Length'])
-            if not 0 < length <= MAX_REQUEST:
+            from deployer import schema
+            limit = schema.MAX_REQUEST if provisioning else MAX_REQUEST
+            if not 0 < length <= limit:
                 raise ValueError('invalid size')
             self.connection.settimeout(5)
             raw = self.rfile.read(length)
             if len(raw) != length:
                 raise ValueError('truncated body')
-            value = authenticate(raw, self.headers['X-Management-Signature'], self.secret, self.cfg['nonce_db'])
-            policy = self.cfg['projects'].get(value['project'])
-            if policy is None or value['action'] not in policy['actions']:
-                raise ValueError('not authorized')
+            value = authenticate(raw, self.headers['X-Management-Signature'], self.secret, self.cfg['nonce_db'],
+                                 validator=schema.request if provisioning else request,
+                                 limit=limit)
+            if provisioning:
+                if value['operation'] not in self.cfg['deployer']['operations']:
+                    raise ValueError('not authorized')
+                from deployer.service import SOCKET
+                socket_path = SOCKET
+            else:
+                policy = self.cfg['projects'].get(value['project'])
+                if policy is None or value['action'] not in policy['actions']:
+                    raise ValueError('not authorized')
+                socket_path = policy['socket']
         except (ValueError, TypeError, KeyError, UnicodeError):
             self.respond(403, {'status': 'denied'})
             return
@@ -82,7 +102,7 @@ class Gateway(BaseHTTPRequestHandler):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(10)
-                connection.connect(policy['socket'])
+                connection.connect(socket_path)
                 connection.sendall(json.dumps(value).encode() + b'\n')
                 result = json.loads(read_frame(connection, MAX_RESPONSE))
             self.respond(200, result)

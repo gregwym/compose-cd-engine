@@ -556,6 +556,11 @@ def main():
         raise SystemExit("Docker socket or CLI unavailable")
     os.umask(0o077)
     configs = [load_target(p) for p in sorted(TARGET_DIR.glob("*.json"))]
+    if os.environ.get('CD_DEPLOYER_POLICY'):
+        import sys
+        from deployer.service import Service
+        provisioner = Service(os.environ['CD_DEPLOYER_POLICY'], sys.modules[__name__])
+        threading.Thread(target=provisioner.serve, daemon=True).start()
     if not configs:
         print("idle: no fixed deployment targets configured", flush=True)
         threading.Event().wait()

@@ -1,0 +1,15 @@
+{
+  "services": {
+    "app": {
+      "image": "example.invalid/owner/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "memory_mb": 128,
+      "cpus": 1,
+      "environment": {"TZ": "America/Los_Angeles"},
+      "mounts": [
+        {"storage": "config", "slot": "app", "target": "/app/config", "read_only": false},
+        {"storage": "downloads", "slot": "shared", "target": "/downloads", "read_only": false}
+      ],
+      "ports": [{"published": 20080, "target": 8080, "protocol": "tcp"}]
+    }
+  }
+}

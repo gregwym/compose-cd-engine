@@ -1,0 +1,11 @@
+# OPTIONAL creation/change API. Merge after compose.yml and compose.management.yml.
+# Private deployment overlay must add SAME-ABSOLUTE-PATH writable mounts for the
+# workspace and approved storage roots. Do not mount photos, backups or DSM roots.
+services:
+  runner:
+    environment:
+      CD_DEPLOYER_POLICY: /etc/compose-cd/provisioning/policy.json
+    volumes:
+      - ./provisioning-policy:/etc/compose-cd/provisioning:ro
+    # Private project declarations can contain credentials; never mount this
+    # workspace or its SQLite database into management, verifier or applications.

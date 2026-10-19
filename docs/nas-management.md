@@ -1,5 +1,10 @@
 # Restricted NAS application management (pilot)
 
+This page describes fixed, administrator-enrolled projects. For optional creation
+and changes inside an administrator-defined envelope, see
+[policy-constrained provisioning](project-provisioning.md). That separate endpoint
+does not relax the fixed-action endpoint or accept arbitrary Compose/YAML.
+
 The Mac agent gets a private HTTPS application-action API, **not** DSM, SSH,
 Docker credentials, arbitrary Compose, shell, `exec`, prune, or storage APIs.
 This is an implementation foundation, not a claim of tested DSM compatibility.

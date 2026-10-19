@@ -71,7 +71,7 @@ jobs:
       - name: Smoke test packaged engine and tools
         run: |
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 receiver/receiver.py --help
-          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, runner.runner, management.gateway, management.broker'
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, runner.runner, management.gateway, management.broker, deployer.service'
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
       - name: Exercise restricted management against disposable Docker services
@@ -80,6 +80,15 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL --user 0:0 --tmpfs /tmp:size=64m \
             -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD/scripts/smoke_management.py:/integration/smoke.py:ro" \
+            compose-cd-engine:test python3 /integration/smoke.py
+      - name: Exercise project creation and failed update on disposable Docker
+        if: github.event_name == 'pull_request'
+        run: |
+          sudo install -d -m 700 /run/compose-project-smoke
+          docker run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --user 0:0 --tmpfs /tmp:size=64m \
+            -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /run/compose-project-smoke:/run/compose-project-smoke \
+            -v "$PWD/scripts/smoke_projects.py:/integration/smoke.py:ro" \
             compose-cd-engine:test python3 /integration/smoke.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         if: github.event_name != 'pull_request'
