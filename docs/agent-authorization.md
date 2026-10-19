@@ -210,6 +210,71 @@ agent endpoints; forwarding `approved: true` never authorizes anything.
 
 ## Residual risk and validation boundary
 
+## OpenClaw / Telegram continuation
+
+Use the existing OpenClaw Telegram conversation, not another bot or a chat-based
+approval credential. Install only the project agent HMAC key on the Mac in a
+0600 file. No Passkey, administrator cookie, enrollment code or service key is
+needed by this client. Run from the repository root with `PYTHONPATH=.`:
+
+```sh
+python3 scripts/agent.py deploy autobangumi --agent openclaw \
+  --endpoint https://engine.example.ts.net --secret-file /private/path/agent.key \
+  --spec /private/path/autobangumi.json --state /private/path/autobangumi-flow.json \
+  --mode persistent --follow
+```
+
+The state directory must be owned by the agent user and mode 0700; specification
+and key files must be 0600. Use a new state filename for a new deployment. To
+resume the same flow after a restart, repeat with the **same state file**, with
+`--spec` optional. A supplied spec must match its original hash; the client will
+not silently re-plan a changed deployment after approval. Changing endpoint,
+project or agent is also rejected. The state contains IDs/hashes, never spec
+environment values or credentials.
+
+OpenClaw should start this command as a background-capable tool invocation and
+read its JSON lines. On `authorization_required`, send the current Telegram
+conversation a concise server-supplied scope summary and the returned HTTPS
+`approval_url`. Example:
+
+> AutoBangumi requests read/write access to the approved downloads alias, an
+> approved image workflow, and the shown resource/network limits. Review and
+> approve with Passkey: [Open private approval page](https://deployer.example.ts.net/).
+> Chat replies do not authorize this request. Open in Safari if necessary.
+
+Keep the command running: it polls authenticated grant status and, after
+approval, applies the **original plan**, then follows its durable task. It does
+not require another chat message or copy an administrator session into OpenClaw.
+If the process or OpenClaw restarts, resume from the same state file. Exit 75
+means pending/temporarily unavailable; schedule a resumed invocation, not a new
+deployment. Deduplicate notifications by `request_id`; do not notify on every
+poll. Denial/expiration/stale policy are reported, not bypassed or reauthorized
+by the agent. A plan still expires after one hour even for a persistent Grant.
+
+`scripts/agent.py` also exposes individual plan/apply/task/status/lifecycle
+operations. It never automatically repeats an unknown start/stop/restart/retire.
+Workflow transport retries are bounded and limited to read calls and the
+idempotent request/apply mapping for the exact same plan. Success is reported
+only after the engine's durable task says success.
+
+### Administrator-preauthorized disposable sandbox
+
+Optionally add an `authorization.sandbox` profile to the administrator Policy:
+
+```json
+{"repositories":["ghcr.io/example/app"],"memory_mb":128,"cpus":1,"max_services":1}
+```
+
+Every repository must require trusted signatures. A declaration qualifies only
+when it has no mounts, no published ports, egress disabled, and fits those
+service/resource ceilings. This profile is the human's prior authorization;
+the Runner requests a policy-attributed, audited Grant without a Passkey. This
+is not agent self-approval. Adding a mount, port, unsigned digest or egress no
+longer qualifies and needs a fresh explicit human request, if Policy permits it.
+Containers still share the host kernel; this is not a VM security boundary.
+
+## Residual risk and validation boundary
+
 Runner's Docker socket remains **host-admin-equivalent**. Grant checks constrain
 inputs, not a compromised Runner or approval process. Signed agent-controlled
 code with writable NAS mounts can corrupt data, and with egress can disclose it.
