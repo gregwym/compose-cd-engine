@@ -4,6 +4,8 @@
 provisioning and v2 API](docs/agent-authorization.md). Existing installations are
 not silently migrated. Physical iPhone/Synology acceptance is separate from CI.
 
+**中文部署方案：**[Synology + Tailscale 容器部署步骤](docs/synology-deployment.zh-CN.md)（方案文档，配套安装包待补齐）。
+
 A small, policy-driven deployment engine for **existing Docker Compose services**.
 GitHub builds and signs; your server independently verifies and deploys pinned
 platform digests. No SSH key or Docker credentials are given to application CI.
