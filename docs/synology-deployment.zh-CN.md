@@ -49,18 +49,19 @@ df -h /volume1
 
 ## 2. 下载与固定镜像【NAS】
 
-四个路径中任何一个已存在都会停止，不覆盖旧状态或密钥。
+所有项目及本文专用目录均位于 `/volume1/docker/`。四个路径中任何一个已存在都会停止，不覆盖旧状态或密钥。
 
 ```sh
-for d in /volume1/compose-cd /volume1/compose-deployer-private \
-         /volume1/compose-app-config /volume1/compose-downloads; do
+test -d /volume1/docker
+for d in /volume1/docker/compose-cd /volume1/docker/compose-deployer-private \
+         /volume1/docker/compose-app-config /volume1/docker/compose-downloads; do
   if [ -e "$d" ] || [ -L "$d" ]; then
     echo "停止：目录已存在：$d" >&2
     exit 1
   fi
 done
-mkdir -m 755 /volume1/compose-cd
-cd /volume1/compose-cd
+mkdir -m 755 /volume1/docker/compose-cd
+cd /volume1/docker/compose-cd
 curl -fL https://github.com/kurisu-agi/compose-cd-engine/archive/d4f1358200e0cefb3a26fc2d97c3edc0305021a7.tar.gz -o source.tar.gz
 tar -xzf source.tar.gz --strip-components=1
 ENGINE=ghcr.io/kurisu-agi/compose-cd-engine@sha256:3d9714291df7e075869add6187455f7a1658d02d2f949891ea6197f9a7528fb6
@@ -90,9 +91,9 @@ esac
 cat > .env <<EOF
 CD_ENGINE_IMAGE=$ENGINE
 CD_TAILSCALE_IMAGE=$TAILSCALE_IMAGE
-CD_DEPLOYER_WORKSPACE=/volume1/compose-deployer-private
-CD_DEPLOYER_CONFIG_ROOT=/volume1/compose-app-config
-CD_DEPLOYER_DOWNLOAD_ROOT=/volume1/compose-downloads
+CD_DEPLOYER_WORKSPACE=/volume1/docker/compose-deployer-private
+CD_DEPLOYER_CONFIG_ROOT=/volume1/docker/compose-app-config
+CD_DEPLOYER_DOWNLOAD_ROOT=/volume1/docker/compose-downloads
 EOF
 chmod 600 .env
 ```
@@ -126,8 +127,8 @@ chmod 750 approval-run
 chown 10005:30005 verification-state verification-run
 chmod 700 verification-state
 chmod 750 verification-run
-mkdir -m 700 /volume1/compose-deployer-private
-mkdir -m 755 /volume1/compose-app-config /volume1/compose-downloads
+mkdir -m 700 /volume1/docker/compose-deployer-private
+mkdir -m 755 /volume1/docker/compose-app-config /volume1/docker/compose-downloads
 
 umask 077
 openssl rand -hex 32 > secrets/management.key
@@ -142,7 +143,7 @@ printf '[]\n' > secrets/scan-fingerprints.json
 chmod 600 secrets/scan-fingerprints.json
 umask 022
 cp examples/agent-gateway.json management-policy/gateway.json
-cp examples/agent-deployer-policy.json provisioning-policy/policy.json
+sed 's|/volume1/compose-|/volume1/docker/compose-|g' examples/agent-deployer-policy.json > provisioning-policy/policy.json
 cp examples/approval-policy.json approval-policy/policy.json
 chmod 644 management-policy/gateway.json provisioning-policy/policy.json approval-policy/policy.json
 ```
@@ -223,12 +224,12 @@ docker run --rm -i --network none --user 0:0 --cap-drop ALL \
   -v "$PWD:/work" -w /work "$ENGINE" - < generate-install.py
 
 # /work 是生成器内部路径，换回实际 NAS 路径。
-sed 's|/work/|/volume1/compose-cd/|g' compose.generated.json > compose.nas.json
+sed 's|/work/|/volume1/docker/compose-cd/|g' compose.generated.json > compose.nas.json
 docker compose -f compose.nas.json config > compose.install.yml
 docker compose -f compose.install.yml config --quiet
 ```
 
-最终导入 `/volume1/compose-cd/compose.install.yml`。它不再依赖叠加模板；仍须保留策略、密钥、状态、`loopback/` 和 `tailscale-config/`。
+最终导入 `/volume1/docker/compose-cd/compose.install.yml`。它不再依赖叠加模板；仍须保留策略、密钥、状态、`loopback/` 和 `tailscale-config/`。
 
 ## 5. 启动独立 Tailscale 并登录【NAS】
 
@@ -262,7 +263,7 @@ printf '%s\n' "$DOMAIN" > deployer-domain.txt
 以下也用于新开 shell 后恢复变量：
 
 ```sh
-cd /volume1/compose-cd
+cd /volume1/docker/compose-cd
 set -eu
 ENGINE=$(sed -n 's/^CD_ENGINE_IMAGE=//p' .env)
 DOMAIN=$(cat deployer-domain.txt)
@@ -278,7 +279,7 @@ EOF
 chmod 644 approval-policy/policy.json
 ```
 
-Container Manager → 项目 → 新增：项目名 `compose-cd`、路径 `/volume1/compose-cd`，导入 **`compose.install.yml`**；不启用 Web Station，不加端口。第 5 步已创建同名项目，若界面不能接管，继续用 CLI 管理，不另建不同项目名。
+Container Manager → 项目 → 新增：项目名 `compose-cd`、路径 `/volume1/docker/compose-cd`，导入 **`compose.install.yml`**；不启用 Web Station，不加端口。第 5 步已创建同名项目，若界面不能接管，继续用 CLI 管理，不另建不同项目名。
 
 ```sh
 docker compose -p compose-cd -f compose.install.yml up -d
@@ -328,7 +329,7 @@ docker compose -p compose-cd -f compose.install.yml exec -T approval \
 
 ## 9. 连接 Mac【NAS → Mac】
 
-只传 `/volume1/compose-cd/agent-keys/openclaw.key`，不传服务密钥或审批数据库。用普通 NAS SSH 账号临时接收文件，再用 `scp` 获取；替换账号和地址。
+只传 `/volume1/docker/compose-cd/agent-keys/openclaw.key`，不传服务密钥或审批数据库。用普通 NAS SSH 账号临时接收文件，再用 `scp` 获取；替换账号和地址。
 
 **Mac：**需要 Python 3.12+；源码目录若存在，另选新目录，不覆盖。
 
@@ -381,7 +382,7 @@ rmdir "$NAS_HOME/.compose-cd-agent-transfer"
 
 ## 10. 配置实际应用策略【NAS 管理员】
 
-**引擎已安装，应用部署仍关闭。**首次选独立测试应用，不接真实下载 / 媒体 / 备份目录。编辑 `/volume1/compose-cd/provisioning-policy/policy.json`：
+**引擎已安装，应用部署仍关闭。**首次选独立测试应用，不接真实下载 / 媒体 / 备份目录。编辑 `/volume1/docker/compose-cd/provisioning-policy/policy.json`：
 
 | 字段 | 必须替换成什么 |
 | --- | --- |
@@ -429,7 +430,7 @@ PYTHONPATH=. python3 scripts/agent.py deploy smoke \
 以下按需选一条执行，不是顺序安装步骤：
 
 ```sh
-cd /volume1/compose-cd
+cd /volume1/docker/compose-cd
 # 查看状态
 docker compose -p compose-cd -f compose.install.yml ps
 # 暂停引擎；已部署应用继续运行
@@ -451,7 +452,7 @@ docker compose -p compose-cd -f compose.install.yml up -d --force-recreate tails
 
 ## 配置文件索引
 
-| 文件 / 目录（位于 `/volume1/compose-cd`） | 用途 |
+| 文件 / 目录（位于 `/volume1/docker/compose-cd`） | 用途 |
 | --- | --- |
 | `.env` | 固定镜像与三个路径；不含密钥值。 |
 | `compose.install.yml` | Container Manager / CLI 使用的最终单文件。 |
