@@ -9,7 +9,7 @@
 | 步骤 | 做什么 | 目的 |
 | --- | --- | --- |
 | 1 | 检查环境 | 确认 amd64、Compose、tailnet HTTPS。 |
-| 2 | 下载固定版本、验签 | 固定源码与镜像，避免 `latest` 漂移。 |
+| 2 | 下载源码、拉取镜像并验签 | 引擎用 `edge`，Tailscale 用 `stable`，不 pin 镜像版本或 digest。 |
 | 3 | 创建目录和密钥 | 分离配置、身份、状态和应用数据。 |
 | 4 | 生成策略、Serve 和完整 Compose | 七个服务一次导入；HTTP 只监听回环地址。 |
 | 5 | 启动 Tailscale 并登录 | 获取独立设备的真实域名。 |
@@ -47,7 +47,7 @@ df -h /volume1
 
 在 Tailscale 后台启用 **MagicDNS、HTTPS**；Mac、iPhone 已加入同一 tailnet。确认 GID `30001–30005` 未与 NAS 敏感组冲突；本文固定使用这组编号。
 
-## 2. 下载与固定镜像【NAS】
+## 2. 下载源码与拉取镜像【NAS】
 
 所有项目及本文专用目录均位于 `/volume1/docker/`。四个路径中任何一个已存在都会停止，不覆盖旧状态或密钥。
 
@@ -64,11 +64,11 @@ mkdir -m 755 /volume1/docker/compose-cd
 cd /volume1/docker/compose-cd
 curl -fL https://github.com/kurisu-agi/compose-cd-engine/archive/d4f1358200e0cefb3a26fc2d97c3edc0305021a7.tar.gz -o source.tar.gz
 tar -xzf source.tar.gz --strip-components=1
-ENGINE=ghcr.io/kurisu-agi/compose-cd-engine@sha256:3d9714291df7e075869add6187455f7a1658d02d2f949891ea6197f9a7528fb6
+ENGINE=ghcr.io/kurisu-agi/compose-cd-engine:edge
 docker pull "$ENGINE"
 ```
 
-引擎对应源码 `2d3cffb`；下载的 `d4f1358` 只额外增加文档。[发布记录](https://github.com/kurisu-agi/compose-cd-engine/actions/runs/39213347618)。
+源码压缩包固定模板版本；镜像使用持续更新的 `edge` / `stable` 标签，不固定版本号或 digest。引擎当前主分支发布标签是 `edge`，不是 `latest`。
 
 在**可信管理员机器**上用已安装的 Cosign 验证；成功后再继续 NAS 安装：
 
@@ -76,18 +76,14 @@ docker pull "$ENGINE"
 cosign verify \
   --certificate-identity 'https://github.com/kurisu-agi/compose-cd-engine/.github/workflows/engine.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/kurisu-agi/compose-cd-engine@sha256:3d9714291df7e075869add6187455f7a1658d02d2f949891ea6197f9a7528fb6
+  ghcr.io/kurisu-agi/compose-cd-engine:edge
 ```
 
-**NAS：**首次拉取官方 Tailscale `stable`，立即固定为拉取到的 digest，后续不跟随标签漂移。这不是引擎的签名验证步骤。
+**NAS：**拉取官方 Tailscale `stable`，配置直接保留标签。
 
 ```sh
 docker pull tailscale/tailscale:stable
-TAILSCALE_IMAGE=$(docker image inspect tailscale/tailscale:stable --format '{{index .RepoDigests 0}}')
-case "$TAILSCALE_IMAGE" in
-  *@sha256:*) ;;
-  *) echo '停止：未获取 Tailscale digest' >&2; exit 1 ;;
-esac
+TAILSCALE_IMAGE=tailscale/tailscale:stable
 cat > .env <<EOF
 CD_ENGINE_IMAGE=$ENGINE
 CD_TAILSCALE_IMAGE=$TAILSCALE_IMAGE
@@ -99,6 +95,8 @@ chmod 600 .env
 ```
 
 ## 3. 创建目录、权限和密钥【NAS】
+
+目录分为配置、密钥、持久状态和运行时 socket。审批、管理、验签服务分别使用自己的 UID/GID 和读写权限，因此不能把数据库、密钥和 socket 全部放进一个共享可写目录。`routes`、`targets`、`sources`、`candidates`、`inbox` 是兼容旧 webhook/CD 模板的目录，不是首次应用部署都必需的独立功能。
 
 只修改新建目录，不递归修改 `/volume1` 或现有共享文件夹 ACL。所有配置及其祖先目录须由 root 管理，不能允许普通用户写入。
 
@@ -169,7 +167,7 @@ cfg = json.loads((root / 'compose.base.json').read_text())
 services = cfg['services']
 env = dict(line.split('=', 1) for line in (root / '.env').read_text().splitlines())
 
-# 当前固定镜像没有 listen 参数：只替换已确认的监听语句，独立挂载。
+# 兼容尚无 listen 参数的镜像：只替换已确认的监听语句，独立挂载。
 # 升级到原生支持 loopback 的镜像后，删除这两份兼容补丁和挂载。
 for service, module, port in [('management', 'management/gateway.py', 18792),
                                ('approval', 'authorization/server.py', 18793)]:
@@ -443,7 +441,7 @@ docker compose -p compose-cd -f compose.install.yml up -d --force-recreate tails
 
 不运行 `down -v`、prune 或删除状态目录。NAS 管理员备份：策略、密钥、`approval-state`、`management-state`、引擎 `state`、私有部署工作区、Tailscale 身份及安装文件 / loopback 补丁。SQLite 一致性备份前停止引擎；备份不交给部署代理。恢复旧授权库可能恢复已撤销 Grant，恢复后先禁用执行并复核授权。
 
-升级保留旧 digest；loopback 补丁与固定版本绑定，不能换镜像后继续盲用。新版本原生支持回环监听时，改用原生配置并移除补丁。数据库不兼容时依赖 NAS 恢复，不承诺自动降级。
+镜像标签不自动更新运行中的容器。升级时先拉取 `edge` / `stable`，再重新生成 loopback 补丁和 Compose；不要沿用旧补丁覆盖新镜像代码。生成器遇到不匹配的监听语句会停止；新镜像原生支持回环监听时改用原生配置。数据库不兼容时依赖 NAS 恢复，不承诺自动降级。
 
 ## 已验证与待验收
 
@@ -454,10 +452,10 @@ docker compose -p compose-cd -f compose.install.yml up -d --force-recreate tails
 
 | 文件 / 目录（位于 `/volume1/docker/compose-cd`） | 用途 |
 | --- | --- |
-| `.env` | 固定镜像与三个路径；不含密钥值。 |
+| `.env` | 镜像标签与三个路径；不含密钥值。 |
 | `compose.install.yml` | Container Manager / CLI 使用的最终单文件。 |
 | `generate-install.py`、`compose.base.json` | 生成步骤留档；启动不依赖它们。 |
-| `loopback/*.py` | 固定镜像的 HTTP 回环监听兼容补丁。 |
+| `loopback/*.py` | 按实际拉取镜像生成的 HTTP 回环监听兼容补丁。 |
 | `tailscale-config/serve.json` | 443 / 8443 转发；Funnel 关闭。 |
 | `tailscale-state/` | Tailscale 设备身份，持久保留。 |
 | `approval-policy/policy.json` | 实际 HTTPS origin、RP ID 和审批 RPC。 |
