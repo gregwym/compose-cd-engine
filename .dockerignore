@@ -25,3 +25,6 @@
 !authorization/*.css
 !authorization/*.js
 !requirements.txt
+!installer/
+!installer/*.py
+!installer/*.json

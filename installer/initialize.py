@@ -1,0 +1,153 @@
+"""Idempotent, root-only initialization of one dedicated installation directory."""
+import argparse
+import json
+import os
+from pathlib import Path
+import secrets
+import stat
+
+HOST_ROOT = '/volume1/docker/compose-deployer'
+DIRECTORIES = {
+    'config': (0, 0, 0o755),
+    'config/management': (0, 0, 0o755),
+    'config/provisioning': (0, 0, 0o755),
+    'config/approval': (0, 0, 0o755),
+    'config/tailscale': (0, 0, 0o755),
+    'config/targets': (0, 0, 0o755),
+    'config/agent-keys': (0, 30002, 0o750),
+    'config/service-keys': (0, 0, 0o755),
+    'config/service-keys/management': (0, 30002, 0o750),
+    'config/service-keys/approval-service': (0, 30004, 0o750),
+    'config/service-keys/verification-service': (0, 30005, 0o750),
+    'state': (0, 0, 0o755),
+    'state/runner': (0, 0, 0o700),
+    'state/workspace': (0, 0, 0o700),
+    'state/management': (10001, 10001, 0o700),
+    'state/approval': (10004, 30004, 0o700),
+    'state/verification': (10005, 30005, 0o700),
+    'state/tailscale': (0, 0, 0o700),
+    'runtime': (0, 0, 0o755),
+    'runtime/management': (0, 30003, 0o750),
+    'runtime/approval': (10004, 30004, 0o750),
+    'runtime/verification': (10005, 30005, 0o750),
+    'runtime/tailscale': (0, 0, 0o700),
+    'apps': (0, 0, 0o755),
+    'apps/config': (0, 0, 0o755),
+    'apps/downloads': (0, 0, 0o755),
+}
+
+
+def check_regular(path, mode=None, gid=None):
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0
+            or info.st_mode & 0o022 or (mode is not None and stat.S_IMODE(info.st_mode) != mode)
+            or (gid is not None and info.st_gid != gid)):
+        raise ValueError('unsafe installation file: ' + str(path))
+
+
+def create_file(path, content, mode=0o644, gid=0):
+    """Never truncate existing files or follow links, including dangling links."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    except FileExistsError:
+        check_regular(path, mode, gid)
+        return False
+    with os.fdopen(fd, 'w') as target:
+        os.fchown(target.fileno(), 0, gid)
+        os.fchmod(target.fileno(), mode)
+        target.write(content)
+        target.flush()
+        os.fsync(target.fileno())
+    return True
+
+
+def json_file(path, value):
+    return create_file(path, json.dumps(value, indent=2) + '\n')
+
+
+def initialize(root):
+    if os.geteuid() != 0:
+        raise ValueError('initializer requires container root')
+    root = Path(root)
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        raise ValueError('installation root must be a real directory')
+    marker = root / 'installation.json'
+    if marker.exists() or marker.is_symlink():
+        check_regular(marker, 0o644, 0)
+        if json.loads(marker.read_text()) != {'schema': 1, 'host_root': HOST_ROOT}:
+            raise ValueError('installation schema/path mismatch; no automatic migration')
+    else:
+        # Compose creates bind directories before starting dependencies. Accept
+        # only its empty, root-owned directory skeleton, never old data/links.
+        for name in ('config', 'state', 'runtime', 'apps'):
+            path = root / name
+            if not path.exists() and not path.is_symlink():
+                continue
+            for item in [path, *path.rglob('*')]:
+                info = item.lstat()
+                relative = str(item.relative_to(root))
+                if (relative not in DIRECTORIES or not stat.S_ISDIR(info.st_mode)
+                        or info.st_uid != 0 or info.st_gid != 0
+                        or stat.S_IMODE(info.st_mode) != 0o755):
+                    raise ValueError('existing data or unsafe unmarked directory: ' + relative)
+        os.chown(root, 0, 0)
+        os.chmod(root, 0o755)
+        json_file(marker, {'schema': 1, 'host_root': HOST_ROOT})
+    if root.stat().st_uid != 0 or root.stat().st_mode & 0o022:
+        raise ValueError('installation root must be administrator-owned and not group/world writable')
+    for name, (uid, gid, mode) in DIRECTORIES.items():
+        path = root / name
+        try:
+            path.mkdir(mode=mode)
+        except FileExistsError:
+            info = path.lstat()
+            if (stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_gid == 0
+                    and stat.S_IMODE(info.st_mode) == 0o755 and not any(path.iterdir())):
+                path.chmod(mode)
+                os.chown(path, uid, gid)
+                info = path.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid
+                    or stat.S_IMODE(info.st_mode) != mode):
+                raise ValueError('unsafe installation directory: ' + name)
+        else:
+            path.chmod(mode)
+            os.chown(path, uid, gid)
+    for name, gid in [('management', 30002), ('approval-service', 30004), ('verification-service', 30005)]:
+        path = root / 'config/service-keys' / name / 'key'
+        create_file(path, secrets.token_hex(32) + '\n', 0o640, gid)
+        if len(path.read_text().strip()) != 64:
+            raise ValueError('invalid existing service key')
+    path = root / 'config/agent-keys/openclaw.key'
+    create_file(path, secrets.token_hex(32) + '\n', 0o640, 30002)
+    if len(path.read_text().strip()) != 64:
+        raise ValueError('invalid existing agent key')
+    json_file(root / 'config/management/gateway.json', {
+        'projects': {}, 'secret_file': '/etc/compose-cd/service-keys/management/key',
+        'nonce_db': '/var/lib/compose-cd-management/nonces.sqlite',
+        'agents': {'openclaw': '/etc/compose-cd/agent-keys/openclaw.key'}})
+    policy = json.loads(Path(__file__).with_name('provisioning-default.json').read_text())
+    policy['authorization']['service_key'] = '/etc/compose-cd/service-keys/approval-service/key'
+    policy['verification']['service_key'] = '/etc/compose-cd/service-keys/verification-service/key'
+    policy['workspace'] = HOST_ROOT + '/state/workspace'
+    policy['storage']['config']['path'] = HOST_ROOT + '/apps/config'
+    policy['storage']['downloads']['path'] = HOST_ROOT + '/apps/downloads'
+    json_file(root / 'config/provisioning/policy.json', policy)
+    serve = {'TCP': {}, 'Web': {}, 'AllowFunnel': {}}
+    for port, backend in [(443, 18793), (8443, 18792)]:
+        host = '${TS_CERT_DOMAIN}:' + str(port)
+        serve['TCP'][str(port)] = {'HTTPS': True}
+        serve['Web'][host] = {'Handlers': {'/': {'Proxy': f'http://127.0.0.1:{backend}'}}}
+        serve['AllowFunnel'][host] = False
+    json_file(root / 'config/tailscale/serve.json', serve)
+    print('Initialization complete. Existing keys, policies, identities and app data preserved.', flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', default='/install')
+    args = parser.parse_args()
+    initialize(args.root)
+
+
+if __name__ == '__main__':
+    main()

@@ -25,6 +25,10 @@ jobs:
       - run: python3 scripts/generate_workflows.py --check
       - run: python3 scripts/check_public_tree.py
       - run: sh -n install.sh && bash -n scripts/sync-state.sh
+      - name: Validate and package single-project Synology installer
+        run: |
+          docker compose -f synology/compose.yaml config --quiet
+          python3 scripts/build_synology_installer.py
       - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose config --quiet
       - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose -f compose.yml -f compose.management.yml config --quiet
       - name: Validate minimal Synology Compose profile
@@ -114,6 +118,18 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, verifier.provisioning, runner.runner, management.gateway, management.broker, deployer.service, authorization.server'
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
+      - name: Exercise first install, enrollment and repeated startup in disposable containers
+        run: |
+          docker run --rm --network none --user 0:0 \
+            -e PYTHONPATH=/src -v "$PWD:/src:ro" -w /src \
+            compose-cd-engine:test python3 -m unittest discover -s tests -p test_synology_installer.py -v
+          sudo install -d -m 755 /run/compose-cd-synology-smoke
+          docker run --rm --user 0:0 --tmpfs /tmp:size=32m \
+            -e CD_DISPOSABLE_CI=1 -e CD_SOURCE="$PWD" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /run/compose-cd-synology-smoke:/run/compose-cd-synology-smoke \
+            -v "$PWD:$PWD:ro" \
+            compose-cd-engine:test python3 "$PWD/scripts/smoke_synology.py"
       - name: Exercise restricted management against disposable Docker services
         if: github.event_name == 'pull_request'
         run: |
@@ -203,3 +219,30 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}
           DIGEST: ${{ needs.image.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
+  synology-installer:
+    needs: sign
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Publish GUI installer after the matching edge image is signed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/build_synology_installer.py
+          cat > /tmp/installer-notes.md <<'NOTES'
+          Single-project DSM Container Manager installer: unzip under /volume1/docker/, import compose.yaml and start. Read README.md for Tailscale login and first Passkey enrollment. No SSH commands required for first installation.
+
+          Uses moving engine edge / Tailscale stable tags. The bundle is released only after its engine build and signing succeed. DSM GUI, real tailnet TLS and iPhone acceptance remain on-device checks; existing installations are not migrated.
+          NOTES
+          if gh release view "synology-${GITHUB_SHA}" >/dev/null 2>&1; then
+            gh release upload "synology-${GITHUB_SHA}" /tmp/compose-deployer-synology.zip --clobber
+          else
+            gh release create "synology-${GITHUB_SHA}" /tmp/compose-deployer-synology.zip \
+              --target "$GITHUB_SHA" --prerelease --title 'Synology installer (edge)' \
+              --notes-file /tmp/installer-notes.md
+          fi

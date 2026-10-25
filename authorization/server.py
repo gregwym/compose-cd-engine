@@ -60,6 +60,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             self.host()
+            if self.path == '/healthz':
+                return self.send(200, {'status': 'ready'})
             if self.path in ('/static/app.js', '/static/style.css'):
                 kind = 'application/javascript' if self.path.endswith('.js') else 'text/css'
                 return self.send(200, Path(__file__).with_name(self.path.split('/')[-1]).read_bytes(), kind)
@@ -133,18 +135,28 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--policy', default='/etc/compose-cd/approval/policy.json')
     parser.add_argument('--bootstrap', metavar='ADMIN', help='local trusted administrator console only; one-time 10 minute token')
+    parser.add_argument('--listen', default='0.0.0.0', choices=['0.0.0.0', '127.0.0.1'])
+    parser.add_argument('--wait-policy', action='store_true', help='wait for first-install domain discovery')
+    parser.add_argument('--first-enrollment-console', action='store_true', help='print first-owner enrollment codes to trusted container logs until enrolled')
     args = parser.parse_args()
     os.umask(0o077)
+    if args.wait_policy:
+        print('Waiting for Tailscale login and HTTPS domain configuration.', flush=True)
+        while not Path(args.policy).exists():
+            time.sleep(2)
     cfg = load(args.policy)
     store = Store(Path(cfg['state']) / 'authorization.sqlite', cfg['origin'])
     if args.bootstrap:
         print(store.bootstrap(args.bootstrap))
         return
-    server = BoundedHTTPServer(('0.0.0.0', 18793), Handler)
+    server = BoundedHTTPServer((args.listen, 18793), Handler)
     server.store, server.origin = store, cfg['origin']
     server.passkeys = Passkeys(store, cfg['rp_id'], cfg['origin'])
     server.sessions, server.session_lock = {}, threading.Lock()
     threading.Thread(target=rpc.serve, args=(cfg, store.rpc, str(Path(cfg['state']) / 'nonces.sqlite')), daemon=True).start()
+    if args.first_enrollment_console:
+        from installer.enrollment import console
+        threading.Thread(target=console, args=(store,), daemon=True).start()
     server.serve_forever()
 
 

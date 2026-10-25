@@ -70,6 +70,14 @@ class Gateway(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def do_GET(self):
+        if self.path == '/healthz':
+            from deployer.service import SOCKET
+            ready = Path(SOCKET).is_socket()
+            self.respond(200 if ready else 503, {'status': 'ready' if ready else 'starting'})
+        else:
+            self.respond(404, {'status': 'not_found'})
+
     def do_POST(self):
         from authorization.protocol import ROUTES, request as agent_request
         v2 = self.path in ROUTES and 'agents' in self.cfg
@@ -135,10 +143,11 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--policy', default='/etc/compose-cd/management/gateway.json')
+    parser.add_argument('--listen', default='0.0.0.0', choices=['0.0.0.0', '127.0.0.1'])
     args = parser.parse_args()
     Gateway.cfg, Gateway.secret = load(args.policy)
     os.umask(0o077)
-    BoundedHTTPServer(('0.0.0.0', 18792), Gateway).serve_forever()
+    BoundedHTTPServer((args.listen, 18792), Gateway).serve_forever()
 
 
 if __name__ == '__main__':
