@@ -2,11 +2,10 @@
 import argparse
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import secrets
 import stat
 
-HOST_ROOT = '/volume1/docker/compose-deployer'
 DIRECTORIES = {
     'config': (0, 0, 0o755),
     'config/management': (0, 0, 0o755),
@@ -65,7 +64,21 @@ def json_file(path, value):
     return create_file(path, json.dumps(value, indent=2) + '\n')
 
 
-def initialize(root):
+def deployment_root(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError('DEPLOY_ROOT must be the absolute host project directory')
+    path = PurePosixPath(value)
+    if (not path.is_absolute() or str(path) != value or str(path) == '/' or value.startswith('//')
+            or '..' in path.parts or any(ord(c) < 32 or c in '$:\\' for c in value)):
+        raise ValueError('DEPLOY_ROOT must be a normalized absolute Linux path without trailing slash or shell/Compose metacharacters')
+    for prefix in ('/etc', '/proc', '/sys', '/dev', '/run', '/var/run', '/var/lib/docker', '/usr', '/bin', '/sbin', '/lib', '/root'):
+        if value == prefix or value.startswith(prefix + '/'):
+            raise ValueError('DEPLOY_ROOT cannot be a host system/control directory')
+    return value
+
+
+def initialize(root, host_root):
+    host_root = deployment_root(host_root)
     if os.geteuid() != 0:
         raise ValueError('initializer requires container root')
     root = Path(root)
@@ -74,7 +87,7 @@ def initialize(root):
     marker = root / 'installation.json'
     if marker.exists() or marker.is_symlink():
         check_regular(marker, 0o644, 0)
-        if json.loads(marker.read_text()) != {'schema': 1, 'host_root': HOST_ROOT}:
+        if json.loads(marker.read_text()) != {'schema': 1, 'host_root': host_root}:
             raise ValueError('installation schema/path mismatch; no automatic migration')
     else:
         # Compose creates bind directories before starting dependencies. Accept
@@ -92,7 +105,7 @@ def initialize(root):
                     raise ValueError('existing data or unsafe unmarked directory: ' + relative)
         os.chown(root, 0, 0)
         os.chmod(root, 0o755)
-        json_file(marker, {'schema': 1, 'host_root': HOST_ROOT})
+        json_file(marker, {'schema': 1, 'host_root': host_root})
     if root.stat().st_uid != 0 or root.stat().st_mode & 0o022:
         raise ValueError('installation root must be administrator-owned and not group/world writable')
     for name, (uid, gid, mode) in DIRECTORIES.items():
@@ -128,9 +141,9 @@ def initialize(root):
     policy = json.loads(Path(__file__).with_name('provisioning-default.json').read_text())
     policy['authorization']['service_key'] = '/etc/compose-cd/service-keys/approval-service/key'
     policy['verification']['service_key'] = '/etc/compose-cd/service-keys/verification-service/key'
-    policy['workspace'] = HOST_ROOT + '/state/workspace'
-    policy['storage']['config']['path'] = HOST_ROOT + '/apps/config'
-    policy['storage']['downloads']['path'] = HOST_ROOT + '/apps/downloads'
+    policy['workspace'] = host_root + '/state/workspace'
+    policy['storage']['config']['path'] = host_root + '/apps/config'
+    policy['storage']['downloads']['path'] = host_root + '/apps/downloads'
     json_file(root / 'config/provisioning/policy.json', policy)
     serve = {'TCP': {}, 'Web': {}, 'AllowFunnel': {}}
     for port, backend in [(443, 18793), (8443, 18792)]:
@@ -145,8 +158,16 @@ def initialize(root):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', default='/install')
+    parser.add_argument('--host-root', default=os.environ.get('DEPLOY_ROOT'))
     args = parser.parse_args()
-    initialize(args.root)
+    # Existing pre-parameterization Compose files can keep using their recorded
+    # installation root on an edge-image upgrade. Never guess for fresh installs.
+    if args.host_root is None:
+        marker = Path(args.root) / 'installation.json'
+        if marker.exists() or marker.is_symlink():
+            check_regular(marker, 0o644, 0)
+            args.host_root = json.loads(marker.read_text()).get('host_root')
+    initialize(args.root, args.host_root)
 
 
 if __name__ == '__main__':

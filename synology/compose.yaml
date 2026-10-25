@@ -19,6 +19,8 @@ services:
     restart: 'no'
     depends_on: {}
     command: [python3, -m, installer.initialize]
+    environment:
+      DEPLOY_ROOT: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}
     user: '0:0'
     network_mode: none
     cap_add: [CHOWN]
@@ -26,7 +28,7 @@ services:
     pids_limit: 16
     volumes:
       - type: bind
-        source: /volume1/docker/compose-deployer
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}
         target: /install
         bind: {create_host_path: false}
 
@@ -50,15 +52,15 @@ services:
       TS_SERVE_CONFIG: /config/serve.json
     volumes:
       - type: bind
-        source: ./state/tailscale
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/tailscale
         target: /var/lib/tailscale
         bind: {create_host_path: true}
       - type: bind
-        source: ./runtime/tailscale
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/tailscale
         target: /var/run/tailscale
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/tailscale
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/tailscale
         target: /config
         read_only: true
         bind: {create_host_path: true}
@@ -75,12 +77,12 @@ services:
     pids_limit: 16
     volumes:
       - type: bind
-        source: ./runtime/tailscale
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/tailscale
         target: /tailscale
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/approval
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/approval
         target: /etc/compose-cd/approval
         bind: {create_host_path: true}
     healthcheck:
@@ -102,20 +104,20 @@ services:
     pids_limit: 32
     volumes:
       - type: bind
-        source: ./config/approval
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/approval
         target: /etc/compose-cd/approval
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./state/approval
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/approval
         target: /var/lib/compose-cd-approval
         bind: {create_host_path: true}
       - type: bind
-        source: ./runtime/approval
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/approval
         target: /run/compose-cd-approval
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/service-keys/approval-service
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/approval-service
         target: /etc/compose-cd/service-keys/approval-service
         read_only: true
         bind: {create_host_path: true}
@@ -139,27 +141,27 @@ services:
     pids_limit: 32
     volumes:
       - type: bind
-        source: ./config/management
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/management
         target: /etc/compose-cd/management
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/service-keys/management
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/management
         target: /etc/compose-cd/service-keys/management
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/agent-keys
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/agent-keys
         target: /etc/compose-cd/agent-keys
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./runtime/management
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/management
         target: /run/compose-cd-management
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./state/management
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/management
         target: /var/lib/compose-cd-management
         bind: {create_host_path: true}
     healthcheck:
@@ -187,59 +189,59 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - type: bind
-        source: ./config/targets
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/targets
         target: /etc/compose-cd/targets
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/provisioning
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/provisioning
         target: /etc/compose-cd/provisioning
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/agent-keys
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/agent-keys
         target: /etc/compose-cd/agent-keys
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/service-keys/approval-service
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/approval-service
         target: /etc/compose-cd/service-keys/approval-service
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/service-keys/verification-service
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/verification-service
         target: /etc/compose-cd/service-keys/verification-service
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./runtime/approval
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/approval
         target: /run/compose-cd-approval
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./runtime/verification
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/verification
         target: /run/compose-cd-verification
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./runtime/management
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/management
         target: /run/compose-cd-management
         bind: {create_host_path: true}
       - type: bind
-        source: ./state/runner
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/runner
         target: /var/lib/compose-cd/state
         bind: {create_host_path: true}
       - type: bind
-        source: /volume1/docker/compose-deployer/state/workspace
-        target: /volume1/docker/compose-deployer/state/workspace
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/workspace
+        target: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/workspace
         bind: {create_host_path: true}
       - type: bind
-        source: /volume1/docker/compose-deployer/apps/config
-        target: /volume1/docker/compose-deployer/apps/config
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/config
+        target: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/config
         bind: {create_host_path: true}
       - type: bind
-        source: /volume1/docker/compose-deployer/apps/downloads
-        target: /volume1/docker/compose-deployer/apps/downloads
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/downloads
+        target: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/downloads
         bind: {create_host_path: true}
     healthcheck:
       test: [CMD, python3, -m, installer.health, runner]
@@ -258,21 +260,21 @@ services:
       HOME: /tmp
     volumes:
       - type: bind
-        source: ./config/provisioning
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/provisioning
         target: /etc/compose-cd/provisioning
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./config/service-keys/verification-service
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/verification-service
         target: /etc/compose-cd/service-keys/verification-service
         read_only: true
         bind: {create_host_path: true}
       - type: bind
-        source: ./runtime/verification
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/verification
         target: /run/compose-cd-verification
         bind: {create_host_path: true}
       - type: bind
-        source: ./state/verification
+        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/verification
         target: /var/lib/compose-cd-verification
         bind: {create_host_path: true}
     healthcheck:

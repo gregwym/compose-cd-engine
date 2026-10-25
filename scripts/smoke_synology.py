@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Disposable real-container install test with a simulated Tailscale LocalAPI.
 
-Requires CD_DISPOSABLE_CI=1 and a same-path mount of /run/compose-cd-synology-smoke.
+Requires CD_DISPOSABLE_CI=1 and a same-path mount of /opt/compose-cd-synology-smoke.
 Never logs enrollment codes or connects a device to a real tailnet.
 """
 import hashlib
@@ -17,13 +17,16 @@ import time
 def main():
     if os.environ.get('CD_DISPOSABLE_CI') != '1':
         raise SystemExit('disposable CI only')
-    base = Path('/run/compose-cd-synology-smoke')
+    base = Path('/opt/compose-cd-synology-smoke')
     base.mkdir(exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix='install-', dir=base))
     name = root.name
     image = os.environ.get('CD_SMOKE_IMAGE', 'compose-cd-engine:test')
     source = Path(os.environ.get('CD_SOURCE', '/src'))
-    model = json.loads(subprocess.check_output(['docker', 'compose', '-f', str(source / 'synology/compose.yaml'), 'config', '--format', 'json']))
+    project = root / 'project'
+    project.mkdir()
+    environment = dict(os.environ, DEPLOY_ROOT=str(project))
+    model = json.loads(subprocess.check_output(['docker', 'compose', '-f', str(source / 'synology/compose.yaml'), 'config', '--format', 'json'], env=environment))
     model['name'] = name
     for network in model.get('networks', {}).values():
         network['name'] = name + '-private'
@@ -36,14 +39,6 @@ def main():
     for service_name, service in services.items():
         if service_name != 'tailscale':
             service['image'] = image
-        for volume in service.get('volumes', []):
-            host = volume.get('source', '')
-            for prefix in ('/volume1/docker/compose-deployer', str(source / 'synology')):
-                if host == prefix or host.startswith(prefix + '/'):
-                    volume['source'] = str(root / 'project') + host[len(prefix):]
-                    break
-    project = root / 'project'
-    project.mkdir()
     control = root / 'control'
     control.mkdir()
     fake = root / 'fake.py'
@@ -98,6 +93,9 @@ with socketserver.UnixStreamServer(str(path), Handler) as server: server.serve_f
         (control / 'logged-in').touch()
         wait(healthy, 'all five application readiness checks')
         print('PASS: login wait → automatic domain → five healthy services', flush=True)
+        policy = json.loads((project / 'config/provisioning/policy.json').read_text())
+        assert policy['workspace'] == str(project / 'state/workspace')
+        assert policy['storage']['config']['path'] == str(project / 'apps/config')
         cfg = json.loads((project / 'config/approval/policy.json').read_text())
         assert cfg['rp_id'] == 'deployer.tail123.ts.net'
         code_logs = compose('logs', '--no-color', 'approval')

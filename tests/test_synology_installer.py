@@ -7,12 +7,19 @@ import zipfile
 
 from installer.configure import configure, domain, status
 from installer.enrollment import first_code
-from installer.initialize import initialize
+from installer.initialize import initialize, deployment_root
 from authorization.store import Store
 from scripts.build_synology_installer import build
 
 
 class DomainConfiguration(unittest.TestCase):
+    def test_deployment_root_is_required_normalized_and_not_a_system_directory(self):
+        for value in (None, '', '.', '/', '//', '//srv/root', 'relative/path', '/srv/../data', '/srv/double//path', '/srv/path/', '/var/run/deployer', '/etc/deployer', '/srv/$PWD'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                deployment_root(value)
+        self.assertEqual(deployment_root('/volume2/containers/custom-name'), '/volume2/containers/custom-name')
+        self.assertEqual(deployment_root('/srv/my projects/deployer'), '/srv/my projects/deployer')
+
     def test_requires_authenticated_device_and_https_and_uses_self_not_peer(self):
         self.assertIsNone(domain({'BackendState': 'NeedsLogin'}))
         value = {'BackendState': 'Running', 'Self': {'DNSName': 'deployer-1.tail123.ts.net.'},
@@ -63,23 +70,39 @@ class DomainConfiguration(unittest.TestCase):
 
 @unittest.skipUnless(os.geteuid() == 0, 'UID/GID isolation requires Linux container root')
 class Initialization(unittest.TestCase):
+    def test_legacy_existing_install_uses_recorded_root_without_a_fixed_fallback(self):
+        from installer.initialize import main
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.dict(os.environ, {}, clear=True), patch('sys.argv', ['initialize', '--root', str(root)]):
+                with self.assertRaises(ValueError):
+                    main()
+                initialize(root, '/srv/legacy-install')
+                main()
+                self.assertEqual(json.loads((root / 'installation.json').read_text())['host_root'], '/srv/legacy-install')
+
     def test_accepts_only_the_expected_empty_docker_created_bind_skeleton(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ('config/service-keys/approval-service', 'state/approval', 'runtime/approval', 'apps/config'):
                 (root / name).mkdir(parents=True, mode=0o755)
-            initialize(root)
+            initialize(root, '/srv/test/deployer')
             self.assertEqual((root / 'state/approval').stat().st_uid, 10004)
             self.assertEqual((root / 'config/service-keys/approval-service/key').stat().st_mode & 0o777, 0o640)
 
     def test_repeated_start_preserves_keys_modified_policy_identity_and_media(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            initialize(root)
+            initialize(root, '/srv/test/deployer')
             keys = {p: p.read_bytes() for p in root.glob('config/**/*') if p.name == 'key' or p.suffix == '.key'}
             policy = root / 'config/provisioning/policy.json'
             value = json.loads(policy.read_text())
             self.assertFalse(value['enabled'])
+            self.assertEqual(value['workspace'], '/srv/test/deployer/state/workspace')
+            self.assertEqual(value['storage']['config']['path'], '/srv/test/deployer/apps/config')
+            with self.assertRaises(ValueError):
+                initialize(root, '/srv/another-location')
             from deployer.schema import policy as validate
             validate(value)
             value['max_projects'] = 3
@@ -88,7 +111,7 @@ class Initialization(unittest.TestCase):
             identity.write_bytes(b'keep identity')
             media = root / 'apps/downloads/media-sentinel'
             media.write_bytes(b'keep media')
-            initialize(root)
+            initialize(root, '/srv/test/deployer')
             self.assertEqual({p: p.read_bytes() for p in keys}, keys)
             self.assertEqual(json.loads(policy.read_text())['max_projects'], 3)
             self.assertEqual(identity.read_bytes(), b'keep identity')
@@ -102,21 +125,21 @@ class Initialization(unittest.TestCase):
             (root / 'state').mkdir()
             (root / 'state/existing-database').write_bytes(b'old identity')
             with self.assertRaises(ValueError):
-                initialize(root)
+                initialize(root, '/srv/test/deployer')
             self.assertFalse((root / 'installation.json').exists())
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            initialize(root)
+            initialize(root, '/srv/test/deployer')
             key = root / 'config/agent-keys/openclaw.key'
             contents = key.read_bytes()
             key.chmod(0o666)
             with self.assertRaises(ValueError):
-                initialize(root)
+                initialize(root, '/srv/test/deployer')
             self.assertEqual(key.read_bytes(), contents)
             key.unlink()
             key.symlink_to('/not-a-real-key')
             with self.assertRaises(ValueError):
-                initialize(root)
+                initialize(root, '/srv/test/deployer')
             self.assertTrue(key.is_symlink())
 
 

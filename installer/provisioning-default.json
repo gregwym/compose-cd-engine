@@ -1,14 +1,14 @@
 {
-  "workspace": "/volume1/compose-deployer-private",
+  "workspace": "${DEPLOY_ROOT}/state/workspace",
   "storage": {
     "config": {
-      "path": "/volume1/compose-app-config",
+      "path": "${DEPLOY_ROOT}/apps/config",
       "shared": false,
       "uid": 10001,
       "gid": 10001
     },
     "downloads": {
-      "path": "/volume1/compose-downloads",
+      "path": "${DEPLOY_ROOT}/apps/downloads",
       "shared": true,
       "uid": 10001,
       "gid": 10001
