@@ -111,3 +111,12 @@ For existing-project adoption see [staged adoption](docs/existing-project-adopti
 The [standalone shared application ingress](docs/shared-app-ingress.md) is a
 separate opt-in profile with independent once-only Passkey approval. Neither is
 enabled automatically by an engine image update.
+
+### Optional bounded task delegation
+
+An administrator-registered project/backend envelope can use one expiring Passkey
+approval for repeat structural inspection, registered observe/same-local-image
+redeploy and fixed tailnet ingress subplans. It does not install NAS policy, pull
+images, authorize lifecycle/recovery or create public exposure. See
+[task delegation design, API and opt-in rollout](docs/task-delegation.md). Existing
+nondelegated APIs retain their independent approvals.

@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 MAX_REQUEST = 65536
 OPS = frozenset({'plan', 'apply', 'task', 'status', 'start', 'stop', 'restart',
                  'grant_request', 'grant_status', 'grants', 'projects', 'diagnose', 'retire',
-                 'inventory', 'inventory_request', 'inspect', 'inspect_request',
+                 'inventory', 'inventory_request', 'inspect', 'inspect_request', 'delegation_request',
                  'adoption_plan', 'adoption_request', 'adoption_apply', 'adoption_task'})
 NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 HEX = re.compile(r'[a-f0-9]{32}')
@@ -71,12 +71,15 @@ def request(raw):
           and isinstance(value['payload'], dict))
     payload = value['payload']
     op = value['operation']
-    if op == 'adoption_plan':
-        fields(payload, {'action'})
+    if op == 'delegation_request':
+        fields(payload, {'lifetime'})
+        number(payload['lifetime'], 60, 86400)
+    elif op == 'adoption_plan':
+        fields(payload, {'action'}, {'delegation_id'})
         check(payload['action'] in ('observe', 'redeploy'))
     elif op in ('adoption_request', 'adoption_apply', 'adoption_task'):
         key = 'task_id' if op == 'adoption_task' else 'plan_id'
-        fields(payload, {key})
+        fields(payload, {key}, {'delegation_id'} if op in ('adoption_apply','adoption_request') else ())
         check(isinstance(payload[key], str) and HEX.fullmatch(payload[key]))
     elif op == 'plan':
         fields(payload, {'services'}, {'egress'})
@@ -96,14 +99,16 @@ def request(raw):
         fields(payload, {key})
         check(isinstance(payload[key], str) and HEX.fullmatch(payload[key]))
     else:
-        fields(payload, set())
+        fields(payload, set(), {'delegation_id'} if op == 'inspect' else ())
+    if 'delegation_id' in payload:
+        check(isinstance(payload['delegation_id'], str) and HEX.fullmatch(payload['delegation_id']))
     return value
 
 
 def policy(cfg):
     fields(cfg, {'workspace', 'storage', 'images', 'port_range', 'bind_ip',
                  'max_projects', 'max_services', 'max_memory_mb', 'max_cpus',
-                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'}, {'authorization', 'verification', 'release_groups', 'adoption'})
+                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'}, {'authorization', 'verification', 'release_groups', 'adoption', 'task_delegation'})
     check(type(cfg['enabled']) is bool and type(cfg['allow_egress']) is bool)
     check(isinstance(cfg['operations'], list) and cfg['operations']
           and all(isinstance(x, str) and x in OPS for x in cfg['operations']))
@@ -185,6 +190,11 @@ def policy(cfg):
                     number(profile['memory_mb'], 32, cfg['max_memory_mb'])
                     number(profile['cpus'], 1, cfg['max_cpus'])
                     number(profile['max_services'], 1, cfg['max_services'])
+    if 'task_delegation' in cfg:
+        fields(cfg['task_delegation'], {'registry'})
+        check('adoption' in cfg and 'authorization' in cfg)
+        from deployer.adoption import path as absolute_path
+        absolute_path(cfg['task_delegation']['registry'])
     if 'adoption' in cfg:
         fields(cfg['adoption'], {'registry'})
         check('authorization' in cfg)

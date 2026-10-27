@@ -117,7 +117,7 @@ class Service:
         reserve_nonce(value, str(self.root / 'nonces.sqlite'))
         project, op, payload = value['project'], value['operation'], value['payload']
         from deployer.transactions import OPS as ADOPTION_OPS
-        adoption = op in ADOPTION_OPS
+        adoption = op in ADOPTION_OPS or op == 'delegation_request'
         inventory = op in ('inventory', 'inventory_request', 'inspect', 'inspect_request')
         cfg = self.policy(require_enabled=op not in ('status', 'task', 'stop', 'grant_status', 'grants', 'projects') and not inventory and not adoption)
         require('authorization' not in cfg or agent in cfg['authorization']['agents'] or paired, 'v2_required')
@@ -137,7 +137,10 @@ class Service:
                 inspection_scope(project)
                 if op == 'inspect_request':
                     return rpc.call(cfg['authorization'], 'inspect_request', {'agent': agent, 'project': project, **payload})
-                rpc.call(cfg['authorization'], 'inspect_access', {'agent': agent, 'project': project})
+                if 'delegation_id' in payload:
+                    self.adoption.inspect_access(cfg, project, agent, payload['delegation_id'])
+                else:
+                    rpc.call(cfg['authorization'], 'inspect_access', {'agent': agent, 'project': project})
                 return inspect_project(self.docker, project)
             require(project == INVENTORY_PROJECT)
             if op == 'inventory_request':

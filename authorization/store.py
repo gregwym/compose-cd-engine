@@ -15,6 +15,9 @@ class Store(PairingStore):
         self.path, self.origin = str(path), origin
         with self.db() as db:
             db.executescript('''
+                CREATE TABLE IF NOT EXISTS delegation_receipts(task TEXT PRIMARY KEY, grant_id TEXT, binding TEXT);
+                CREATE TRIGGER IF NOT EXISTS delegation_no_update BEFORE UPDATE ON delegation_receipts BEGIN SELECT RAISE(ABORT,'immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS delegation_no_delete BEFORE DELETE ON delegation_receipts BEGIN SELECT RAISE(ABORT,'immutable'); END;
                 CREATE TABLE IF NOT EXISTS transaction_grants(task TEXT PRIMARY KEY, grant_id TEXT UNIQUE, binding TEXT);
                 CREATE TABLE IF NOT EXISTS principals(id TEXT PRIMARY KEY, kind TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS credentials(id BLOB PRIMARY KEY, admin TEXT, data BLOB, counter INTEGER, active INTEGER);
@@ -94,6 +97,12 @@ class Store(PairingStore):
         schema.name(value['project']); schema.name(value['agent'])
         require(value['mode'] in ('once', 'persistent', 'expiring'))
         require(type(value['lifetime']) is int and 60 <= value['lifetime'] <= 31536000)
+        if value['scope'].get('type') == 'registered_task_v1':
+            from authorization.delegation import envelope
+            env = envelope(value['scope']['envelope'])
+            require(value['mode'] == 'expiring' and not value['sandbox']
+                    and value['lifetime'] <= env['max_lifetime']
+                    and env['agent'] == value['agent'] and value['scope']['project'] == value['project'])
         now = int(time.time())
         with self.db() as db:
             self.require_active_agent(db, value['agent'])
@@ -135,6 +144,9 @@ class Store(PairingStore):
         self.event(db, admin, 'grant_issued', gid, {'request': rid, 'credential': credential.hex() if credential else None})
 
     def rpc(self, op, value):
+        if op == 'delegation_authorize':
+            from authorization.delegation import authorize
+            return authorize(self, value)
         # Service-key API cannot issue/modify grants or register credentials.
         if op == 'paired':
             schema.fields(value, {'agent', 'public_key', 'audience'})

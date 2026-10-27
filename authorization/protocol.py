@@ -2,7 +2,7 @@
 import json
 from deployer import schema
 
-ROUTES = {'/v2/plans': 'plan', '/v2/deployments': 'apply', '/v2/tasks': 'task',
+ROUTES = {'/v2/delegation/requests': 'delegation_request', '/v2/plans': 'plan', '/v2/deployments': 'apply', '/v2/tasks': 'task',
           '/v2/grant-requests': 'grant_request', '/v2/grant-requests/status': 'grant_status',
           '/v2/grants': 'grants', '/v2/projects': 'projects', '/v2/projects/status': 'status',
           '/v2/projects/start': 'start', '/v2/projects/stop': 'stop',

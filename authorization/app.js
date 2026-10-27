@@ -43,6 +43,17 @@ function disclosure(parent, title) {
   const node = document.createElement('details'); text(node, 'summary', title); parent.append(node); return node;
 }
 function permissions(parent, scope) {
+  if (scope.type === 'registered_task_v1') {
+    text(parent, 'p', 'BOUNDED TASK DELEGATION: ' + scope.project, 'sensitive');
+    text(parent, 'p', 'One expiring approval permits repeated supported subplans, until expiry or revocation. Redeploy can interrupt service.');
+    text(parent, 'p', scope.diagnostics);
+    text(parent, 'p', 'Allowed: ' + scope.operations.join(', '));
+    text(parent, 'p', 'Excluded: ' + scope.exclusions.join('; '), 'sensitive');
+    text(parent, 'p', 'Administrator envelope (exact backend/route/policy/registration): ' + JSON.stringify(scope.envelope));
+    text(parent, 'p', 'Exact resource identities: ' + JSON.stringify(scope.identities));
+    permissions(parent, scope.adoption);
+    return;
+  }
   if ((scope.operations || []).includes('shared_ingress_apply')) {
     text(parent, 'p', 'SHARED APPLICATION INGRESS: ' + scope.backend, 'sensitive');
     const route = scope.route || {};
