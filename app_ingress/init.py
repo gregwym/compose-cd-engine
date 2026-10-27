@@ -19,6 +19,7 @@ def initialize(path):
     protected_directory(root.parent)
     if root.exists():
         require(not root.is_symlink() and root.is_dir())
+        protected_directory(root)
         contents = set(p.name for p in root.iterdir())
         if contents:
             require(contents <= set(LEAVES) | {'.app-ingress-root'}, 'unrelated_root_contents')

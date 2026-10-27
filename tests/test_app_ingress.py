@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import socket
 import sqlite3
 import tempfile
@@ -214,3 +215,14 @@ class Bootstrap(unittest.TestCase):
                 with self.assertRaises(Denied):initialize(str(link))
                 for forbidden in ('/volume1','/volume1/@docker/foo','relative/path'):
                     with self.assertRaises(Denied):initialize(forbidden)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'requires real POSIX ownership')
+    def test_empty_nonroot_owned_root_refused_without_mutation(self):
+        with tempfile.TemporaryDirectory(dir='/run') as temp:
+            root=Path(temp)/'ingress';root.mkdir(mode=0o755)
+            os.chown(root,10009,10009)
+            before=root.stat()
+            with self.assertRaises(ValueError):initialize(str(root))
+            self.assertEqual(list(root.iterdir()),[])
+            self.assertEqual(root.stat().st_uid,before.st_uid)
+            self.assertEqual(root.stat().st_mode,before.st_mode)
