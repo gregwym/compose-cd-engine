@@ -130,6 +130,13 @@ jobs:
             -v /opt/compose-cd-synology-smoke:/opt/compose-cd-synology-smoke \
             -v "$PWD:$PWD:ro" \
             compose-cd-engine:test python3 "$PWD/scripts/smoke_synology.py"
+      - name: Exercise same-image original-project adoption on disposable Docker
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm --network none --cap-drop ALL --user 0:0 \
+            -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/scripts/smoke_adoption_transactions.py:/integration/smoke.py:ro" \
+            compose-cd-engine:test python3 /integration/smoke.py
       - name: Exercise restricted management against disposable Docker services
         if: github.event_name == 'pull_request'
         run: |

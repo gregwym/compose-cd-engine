@@ -1335,6 +1335,404 @@
           }
         }
       }
+    },
+    "/v2/adoption/plans": {
+      "post": {
+        "operationId": "adoption_plan",
+        "security": [
+          {
+            "AgentHMAC": []
+          }
+        ],
+        "description": "Opt-in administrator-registered existing-project transaction. Exact declaration/baseline/local image IDs; no remote Compose or paths. Independent once Passkey authorization. Enqueue returns task, not completion.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "const": 2
+                  },
+                  "agent": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "project": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "operation": {
+                    "const": "adoption_plan"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "timestamp": {
+                    "type": "integer"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "action"
+                    ],
+                    "properties": {
+                      "action": {
+                        "enum": [
+                          "observe",
+                          "redeploy"
+                        ]
+                      }
+                    }
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "audience": {
+                    "type": "string",
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "version",
+                  "agent",
+                  "project",
+                  "operation",
+                  "request_id",
+                  "timestamp",
+                  "payload"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded, sanitized result. Inspect status/grant_diff/task_id; HTTP 200 alone does not mean deployed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid HMAC, nonce, route, principal or framing."
+          },
+          "503": {
+            "description": "Unavailable or outcome unknown; reconcile task/plan mapping before retry."
+          }
+        }
+      }
+    },
+    "/v2/adoption/requests": {
+      "post": {
+        "operationId": "adoption_request",
+        "security": [
+          {
+            "AgentHMAC": []
+          }
+        ],
+        "description": "Opt-in administrator-registered existing-project transaction. Exact declaration/baseline/local image IDs; no remote Compose or paths. Independent once Passkey authorization. Enqueue returns task, not completion.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "const": 2
+                  },
+                  "agent": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "project": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "operation": {
+                    "const": "adoption_request"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "timestamp": {
+                    "type": "integer"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "plan_id"
+                    ],
+                    "properties": {
+                      "plan_id": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{32}$"
+                      }
+                    }
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "audience": {
+                    "type": "string",
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "version",
+                  "agent",
+                  "project",
+                  "operation",
+                  "request_id",
+                  "timestamp",
+                  "payload"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded, sanitized result. Inspect status/grant_diff/task_id; HTTP 200 alone does not mean deployed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid HMAC, nonce, route, principal or framing."
+          },
+          "503": {
+            "description": "Unavailable or outcome unknown; reconcile task/plan mapping before retry."
+          }
+        }
+      }
+    },
+    "/v2/adoption/apply": {
+      "post": {
+        "operationId": "adoption_apply",
+        "security": [
+          {
+            "AgentHMAC": []
+          }
+        ],
+        "description": "Opt-in administrator-registered existing-project transaction. Exact declaration/baseline/local image IDs; no remote Compose or paths. Independent once Passkey authorization. Enqueue returns task, not completion.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "const": 2
+                  },
+                  "agent": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "project": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "operation": {
+                    "const": "adoption_apply"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "timestamp": {
+                    "type": "integer"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "plan_id"
+                    ],
+                    "properties": {
+                      "plan_id": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{32}$"
+                      }
+                    }
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "audience": {
+                    "type": "string",
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "version",
+                  "agent",
+                  "project",
+                  "operation",
+                  "request_id",
+                  "timestamp",
+                  "payload"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded, sanitized result. Inspect status/grant_diff/task_id; HTTP 200 alone does not mean deployed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid HMAC, nonce, route, principal or framing."
+          },
+          "503": {
+            "description": "Unavailable or outcome unknown; reconcile task/plan mapping before retry."
+          }
+        }
+      }
+    },
+    "/v2/adoption/tasks": {
+      "post": {
+        "operationId": "adoption_task",
+        "security": [
+          {
+            "AgentHMAC": []
+          }
+        ],
+        "description": "Opt-in administrator-registered existing-project transaction. Exact declaration/baseline/local image IDs; no remote Compose or paths. Independent once Passkey authorization. Enqueue returns task, not completion.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "const": 2
+                  },
+                  "agent": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "project": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "operation": {
+                    "const": "adoption_task"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "timestamp": {
+                    "type": "integer"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "task_id"
+                    ],
+                    "properties": {
+                      "task_id": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{32}$"
+                      }
+                    }
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "audience": {
+                    "type": "string",
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "version",
+                  "agent",
+                  "project",
+                  "operation",
+                  "request_id",
+                  "timestamp",
+                  "payload"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded, sanitized result. Inspect status/grant_diff/task_id; HTTP 200 alone does not mean deployed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid HMAC, nonce, route, principal or framing."
+          },
+          "503": {
+            "description": "Unavailable or outcome unknown; reconcile task/plan mapping before retry."
+          }
+        }
+      }
     }
   },
   "components": {

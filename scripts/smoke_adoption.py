@@ -19,10 +19,10 @@ def main():
         '--label', 'com.docker.compose.project.working_dir=/srv/disposable',
         '--label', 'com.docker.compose.project.config_files=/srv/disposable/compose.yaml',
         '--env', 'PRIVATE_SMOKE=must-not-return',
-        'compose-cd-engine:pairing-test']).decode().strip()
+        os.environ.get('CD_SMOKE_IMAGE','compose-cd-engine:test')]).decode().strip()
     try:
-        def query(*args):
-            return run(docker + list(args), env=os.environ)
+        def query(*args, timeout):
+            return run(docker + list(args), env=os.environ, timeout=timeout)
         baseline = inspect_project(query, project)
         assert baseline['containers'][0]['container_id'] == cid
         assert 'must-not-return' not in json.dumps(baseline)

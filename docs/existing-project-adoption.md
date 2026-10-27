@@ -10,10 +10,11 @@ mounts, actual image IDs and administrator-owned backups. No engine snapshots,
 media manipulation, recursive ownership changes, down, prune or automatic database
 downgrades are introduced.
 
-This increment implements **only separately authorized structural discovery** and
-offline fail-closed preview helpers. It does NOT implement live adoption, original
-Compose execution, image updates, shared ingress provisioning, or Serve apply.
-The actual application migration remains blocked; this is not a completion claim.
+The structural layer provides separately authorized discovery and offline preview
+helpers. The next layer now implements administrator-registered observe adoption
+and exact same-local-image redeploy; see [execution design](adoption-execution-design.md).
+No unreviewed original Compose is executed. Shared ingress apply and actual NAS
+migration remain unaccepted; these features do not establish AutoBangumi readiness.
 
 ## Verified evidence
 
@@ -50,7 +51,9 @@ is opened. Host paths and network names are sensitive structural metadata: store
 responses privately, never in public issues or test fixtures.
 
 Output is bounded before subprocess buffering (512 KiB per command), per projected
-container (32 KiB), container count (32), and final baseline (48 KiB). Unsupported,
+container (32 KiB), container count (32), and final baseline (48 KiB). Structural Docker queries share
+a six-second total deadline, with remaining timeout passed into every subprocess;
+inspection authorization RPC is capped at two seconds. Unsupported,
 missing or inconsistent metadata fails closed. Membership is rechecked after the
 projection, but this is not a Docker transaction: baseline hash is an observation,
 not a guarantee against same-ID metadata changes during collection. A future
@@ -91,9 +94,9 @@ namespace are not generated. Neither are guessed public app URLs.
    Docker labels are untrusted hints, not permission to open arbitrary host files.
    A safe adopter requires a server-owned exact target registration plus canonical
    reviewed declaration/hash, bounded trusted file handling and execution policy.
-4. Implement an immutable Passkey-bound adoption transaction and durable task
-   journal, exact baseline/policy/identity revalidation, recovery-required handling
-   and retention of original image IDs. Only after these exist may adoption run.
+4. Install the opt-in administrator registry, then approve the immutable adoption
+   transaction. Existing-project durable tasks enforce exact baseline/policy/hash
+   revalidation and same local image IDs; partial failure latches recovery-required.
 5. Provision shared app ingress with reviewed network isolation and meaningful
    backend probes. Add independent ingress grants, control-plane separation,
    drift reconciliation, durable apply/receipt and tested recovery. This increment

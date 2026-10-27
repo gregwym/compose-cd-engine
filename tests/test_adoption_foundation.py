@@ -39,6 +39,17 @@ class Projection(unittest.TestCase):
         with self.assertRaises(ValueError): adoption.adoption_preview(result)
         self.assertTrue(all(c.args[0] in ('ps', 'inspect') for c in docker.call_args_list))
 
+    def test_total_deadline_propagated_and_delayed_query_fails(self):
+        import time
+        calls = []
+        def delayed(*args, timeout):
+            calls.append(timeout)
+            time.sleep(.02)
+            return CID.encode()
+        with self.assertRaises(Denied): adoption.inspect_project(delayed, 'existing-app', budget=.01)
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(calls[0], .01)
+
     def test_cross_project_and_membership_drift_fail(self):
         changed = row(); changed['project'] = 'other'
         with self.assertRaises(Denied): adoption.inspect_project(self.docker(changed), 'existing-app')
@@ -65,6 +76,19 @@ class InspectionGrants(PairingInventory):
 
 
 class InspectionWire(RunnerBoundary):
+    def test_failed_once_inspection_cannot_be_replayed(self):
+        with self.store.db() as db:
+            import time
+            db.execute('INSERT INTO paired_agents VALUES (?,?,?,?,?,?,?)',
+                       (self.agent,self.public,'test','owner',None,int(time.time()),'active'))
+        req=self.service.dispatch_wire(self.wire('inspect_request',{'mode':'once','lifetime':600},project='existing-app'))
+        with self.store.db() as db:self.store.issue(db,req['request_id'],'owner',None)
+        from unittest.mock import patch
+        with patch('deployer.adoption.inspect_project',side_effect=TimeoutError('slow')) as observer:
+            with self.assertRaises(TimeoutError):self.service.dispatch_wire(self.wire('inspect',project='existing-app'))
+            with self.assertRaises(Denied):self.service.dispatch_wire(self.wire('inspect',project='existing-app'))
+            self.assertEqual(observer.call_count,1)
+
     def test_empty_legacy_agents_and_separate_grant_before_docker(self):
         self.cfg['authorization']['agents'] = {}
         schema.policy(self.cfg)
@@ -98,9 +122,19 @@ class IngressPlans(unittest.TestCase):
         self.assertEqual(baseline, original)
         self.assertEqual(planned['candidate']['Web']['apps.example.ts.net:443'], baseline['Web']['apps.example.ts.net:443'])
         self.assertFalse(planned['execute_allowed'])
-        ingress.reconcile(planned, baseline)
+        ingress.reconcile(planned, baseline, allowed_upstreams=['http://127.0.0.1:8080'])
         baseline['TCP']['10000'] = {'HTTPS': True}
-        with self.assertRaises(Denied): ingress.reconcile(planned, baseline)
+        with self.assertRaises(Denied): ingress.reconcile(planned, baseline, allowed_upstreams=['http://127.0.0.1:8080'])
+
+    def test_rehashed_candidate_tampering_is_not_authority(self):
+        baseline = self.baseline()
+        for change in ('control', 'funnel'):
+            candidate = self.plan()
+            if change == 'control': candidate['candidate']['TCP']['443'] = {'TCPForward': 'bad:1'}
+            else: candidate['candidate']['AllowFunnel']['apps.example.ts.net:9443'] = True
+            candidate['candidate_hash'] = schema.fingerprint(candidate['candidate'])
+            with self.assertRaises(Denied):
+                ingress.reconcile(candidate, baseline, allowed_upstreams=['http://127.0.0.1:8080'])
 
     def test_reserved_ports_upstreams_public_and_conflict_rejected(self):
         for port in (443, 8443):

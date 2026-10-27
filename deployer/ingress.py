@@ -42,7 +42,12 @@ def plan(current, *, hostname, port, upstream, allowed_upstreams):
                          'separate Passkey-bound ingress apply is not implemented']}
 
 
-def reconcile(plan, current):
-    require(plan['baseline_hash'] == schema.fingerprint(current), 'ingress_drift')
-    require(plan['candidate_hash'] == schema.fingerprint(plan['candidate']), 'ingress_drift')
-    return copy.deepcopy(plan['candidate'])
+def reconcile(candidate_plan, current, *, allowed_upstreams):
+    require(candidate_plan['baseline_hash'] == schema.fingerprint(current), 'ingress_drift')
+    wanted = candidate_plan['scope']
+    schema.fields(wanted, {'operation', 'hostname', 'https_port', 'upstream', 'tailnet_only'})
+    require(wanted['operation'] == 'ingress_change' and wanted['tailnet_only'] is True)
+    rebuilt = plan(current, hostname=wanted['hostname'], port=wanted['https_port'],
+                   upstream=wanted['upstream'], allowed_upstreams=allowed_upstreams)
+    require(candidate_plan == rebuilt, 'ingress_drift')
+    return copy.deepcopy(rebuilt['candidate'])

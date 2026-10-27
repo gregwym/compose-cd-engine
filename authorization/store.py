@@ -15,6 +15,7 @@ class Store(PairingStore):
         self.path, self.origin = str(path), origin
         with self.db() as db:
             db.executescript('''
+                CREATE TABLE IF NOT EXISTS transaction_grants(task TEXT PRIMARY KEY, grant_id TEXT UNIQUE, binding TEXT);
                 CREATE TABLE IF NOT EXISTS principals(id TEXT PRIMARY KEY, kind TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS credentials(id BLOB PRIMARY KEY, admin TEXT, data BLOB, counter INTEGER, active INTEGER);
                 CREATE TABLE IF NOT EXISTS bootstrap(token TEXT PRIMARY KEY, admin TEXT, expires INTEGER);
@@ -73,6 +74,7 @@ class Store(PairingStore):
 
     def check(self, value):
         with self.db() as db:
+            self.require_active_agent(db, value['agent'])
             best, selected = value['scope'], None
             for grant in self.grants(db, value['agent'], value['project']):
                 if grant['policy'] != value['policy'] or (grant['mode'] == 'once' and grant['plan'] != value['plan']):
@@ -137,6 +139,32 @@ class Store(PairingStore):
         if op == 'paired':
             schema.fields(value, {'agent', 'public_key', 'audience'})
             return self.paired(value['agent'], value['public_key'], value['audience'])
+        if op == 'transaction_authorize':
+            schema.fields(value, {'agent', 'project', 'plan', 'policy', 'scope', 'task'})
+            require(schema.HEX.fullmatch(value['plan']) and schema.HEX.fullmatch(value['task']))
+            binding = schema.fingerprint({k:v for k,v in value.items() if k != 'task'})
+            with self.db() as db:
+                self.require_active_agent(db, value['agent'])
+                bound = db.execute('SELECT grant_id,binding FROM transaction_grants WHERE task=?', (value['task'],)).fetchone()
+                rows = db.execute('SELECT * FROM grants WHERE agent=? AND project=? AND plan=? AND policy=?',
+                                  (value['agent'],value['project'],value['plan'],value['policy'])).fetchall()
+                for row in rows:
+                    if json.loads(row['scope']) != value['scope'] or (row['expires'] and row['expires'] <= time.time()):
+                        continue
+                    if bound:
+                        require(bound['binding'] == binding and bound['grant_id'] == row['id'], 'stale_request')
+                        require(row['status'] == 'active')
+                        return {'status':'authorized','grant_id':row['id']}
+                    if row['status'] != 'active':
+                        continue
+                    require(not db.execute('SELECT 1 FROM transaction_grants WHERE grant_id=?', (row['id'],)).fetchone())
+                    db.execute('INSERT INTO transaction_grants VALUES (?,?,?)', (value['task'],row['id'],binding))
+                    # Unique task binding consumes execution authority while keeping
+                    # the grant visible/revocable until completion or expiry.
+                    db.execute("UPDATE grants SET revision=revision+1 WHERE id=?", (row['id'],))
+                    self.event(db,value['agent'],'transaction_bound',value['task'])
+                    return {'status':'authorized','grant_id':row['id']}
+            require(False)
         if op == 'inspect_request':
             from deployer.adoption import inspection_scope, inspection_policy
             schema.fields(value, {'agent', 'project', 'mode', 'lifetime'})

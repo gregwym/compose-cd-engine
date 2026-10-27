@@ -4,6 +4,7 @@ The baseline is evidence, not an executable declaration or management grant.
 """
 import json
 import re
+import time
 from pathlib import PurePosixPath
 from deployer import schema
 from authorization.scope import require
@@ -54,8 +55,16 @@ def project_name(value):
     return value
 
 
-def inspect_project(docker, project):
+def inspect_project(docker, project, *, budget=6):
     inspection_scope(project)
+    deadline = time.monotonic() + budget
+    query = docker
+    def docker(*args):
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, 'inspection_timeout')
+        result = query(*args, timeout=remaining)
+        require(time.monotonic() < deadline, 'inspection_timeout')
+        return result
     ids = docker('ps', '--all', '--no-trunc', '--quiet', '--last', '33', '--filter',
                  'label=' + LABEL + 'project=' + project).decode().split()
     require(0 < len(ids) <= 32, 'unsupported_project')
@@ -109,13 +118,53 @@ def inspect_project(docker, project):
             'managed_access_granted': False, 'adoption_ready': False,
             'blockers': ['administrator-reviewed original Compose required',
                          'separate immutable adoption approval required',
-                         'original project execution not implemented']}
+                         'administrator target registration required before adoption transaction']}
+
+
+def validate_baseline(baseline):
+    schema.check(isinstance(baseline,dict))
+    inspection_scope(baseline['project'])
+    rows = baseline['containers']
+    schema.check(isinstance(rows,list) and 1<=len(rows)<=32)
+    ids,names,services=set(),set(),set()
+    for row in rows:
+        schema.fields(row,set(FIELDS))
+        require(row['project']==baseline['project'],'identity_drift')
+        schema.check(isinstance(row['container_id'],str) and re.fullmatch('[a-f0-9]{64}',row['container_id']))
+        schema.check(isinstance(row['image_id'],str) and re.fullmatch('sha256:[a-f0-9]{64}',row['image_id']))
+        project_name(row['name']); project_name(row['service']); text(row['image'],256)
+        schema.check(row['container_id'] not in ids and row['name'] not in names and row['service'] not in services)
+        ids.add(row['container_id']); names.add(row['name']); services.add(row['service'])
+        path(row['working_dir'])
+        schema.check(isinstance(row['config_files'],list) and 1<=len(row['config_files'])<=8)
+        for item in row['config_files']: path(item)
+        schema.check(isinstance(row['mounts'],list) and len(row['mounts'])<=32)
+        for mount in row['mounts']:
+            schema.fields(mount,{'type','source','target','read_only'})
+            require(mount['type'] in ('bind','volume','tmpfs'))
+            path(mount['target'])
+            if mount['type']!='tmpfs': path(mount['source'])
+            else: require(mount['source'] is None)
+            schema.check(type(mount['read_only']) is bool)
+        schema.check(isinstance(row['ports'],list) and len(row['ports'])<=1024)
+        for port in row['ports']:
+            schema.fields(port,{'target','published','host_ip'})
+            schema.check(re.fullmatch(r'[0-9]{1,5}/(tcp|udp|sctp)',port['target']))
+            schema.number(int(port['target'].split('/')[0]),1,65535)
+            schema.number(port['published'],1,65535)
+            import ipaddress
+            ipaddress.ip_address(port['host_ip'])
+        schema.check(isinstance(row['networks'],list) and len(row['networks'])<=32)
+        for network in row['networks']: project_name(network)
+        require(row['state'] in ('created','running','paused','restarting','removing','exited','dead'))
+    expected={'project':baseline['project'],'containers':rows}
+    require(baseline['baseline_hash']==schema.fingerprint(expected),'baseline_drift')
+    return baseline
 
 
 def adoption_preview(baseline):
     """Immutable comparison evidence only, intentionally not executable."""
-    expected = {'project': baseline['project'], 'containers': baseline['containers']}
-    schema.check(baseline['baseline_hash'] == schema.fingerprint(expected))
+    validate_baseline(baseline)
     identities = {(r['working_dir'], tuple(r['config_files'])) for r in baseline['containers']}
     require(len(identities) == 1 and len({r['service'] for r in baseline['containers']}) == len(baseline['containers']),
             'ambiguous_compose_identity')
