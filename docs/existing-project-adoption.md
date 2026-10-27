@@ -97,10 +97,11 @@ namespace are not generated. Neither are guessed public app URLs.
 4. Install the opt-in administrator registry, then approve the immutable adoption
    transaction. Existing-project durable tasks enforce exact baseline/policy/hash
    revalidation and same local image IDs; partial failure latches recovery-required.
-5. Provision shared app ingress with reviewed network isolation and meaningful
-   backend probes. Add independent ingress grants, control-plane separation,
-   drift reconciliation, durable apply/receipt and tested recovery. This increment
-   does not edit existing sidecar or proxy configuration.
+5. Provision the opt-in [standalone shared application ingress](shared-app-ingress.md)
+   with reviewed network isolation and meaningful backend probes. Independent
+   Passkey grants, drift reconciliation, durable receipts and recovery are now
+   implemented, but require private administrator installation and live acceptance.
+   Updating the engine does not edit existing sidecar or proxy configuration.
 6. Validate selected upstream image version/entrypoint UID and permissions, existing
    app config/data compatibility and actual downloader dependency. A running image
    with a moving tag does not establish its release version or readiness.

@@ -50,9 +50,10 @@ compatibility and old schema state must be verified on-device before redeploy.
 Shared ingress remains a different administrator-owned transaction boundary. Do
 not mount Tailscale credentials into agents or join applications to the approval
 namespace. Offline merge helper does not equal live apply. A dedicated local
-application-ingress broker with independently provisioned Serve baseline is needed
-before remote apply can be implemented safely; no caller-chosen Docker exec or
-Tailscale socket path will be introduced as a shortcut.
+application-ingress broker with independently provisioned Serve baseline is now
+implemented as an [opt-in standalone profile](shared-app-ingress.md), separate
+from adoption. Administrator installation and live tailnet acceptance remain
+required; callers cannot select Docker exec commands or Tailscale socket paths.
 
 ## Rollout
 

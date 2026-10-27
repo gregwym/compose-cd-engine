@@ -43,6 +43,14 @@ function disclosure(parent, title) {
   const node = document.createElement('details'); text(node, 'summary', title); parent.append(node); return node;
 }
 function permissions(parent, scope) {
+  if ((scope.operations || []).includes('shared_ingress_apply')) {
+    text(parent, 'p', 'SHARED APPLICATION INGRESS: ' + scope.backend, 'sensitive');
+    const route = scope.route || {};
+    text(parent, 'p', 'Tailnet-only HTTPS: ' + route.hostname + ':' + route.https_port + '/. No Funnel and no application redeployment.');
+    text(parent, 'p', 'This is a separate once-only Serve configuration change, not an application-management grant.');
+    text(parent, 'p', 'Baseline: ' + scope.baseline_hash + '; candidate: ' + scope.candidate_hash + '; administrator backend: ' + scope.backend_hash);
+    if (scope.recovery_of) text(parent, 'p', 'RECOVERY: restore the previous Serve document for transaction ' + scope.recovery_of, 'sensitive');
+  }
   if ((scope.operations || []).some(op => op.startsWith('adoption_'))) {
     text(parent, 'p', 'EXISTING PROJECT TRANSACTION: ' + scope.project + ' · ' + scope.operations.join(', '), 'sensitive');
     text(parent, 'p', 'Original project/container/mount/port/network identities are retained; no images pulled or data deleted. Redeploy can interrupt service. Runtime configuration is administrator-reviewed, NOT proven unchanged.');

@@ -106,3 +106,8 @@ For new project creation and changes without SSH, see
 [policy-constrained project provisioning](docs/project-provisioning.md).
 It is opt-in, uses a closed JSON schema rather than uploaded Compose, and does
 not alter existing fixed-target CD or promote production engine images.
+
+For existing-project adoption see [staged adoption](docs/existing-project-adoption.md).
+The [standalone shared application ingress](docs/shared-app-ingress.md) is a
+separate opt-in profile with independent once-only Passkey approval. Neither is
+enabled automatically by an engine image update.

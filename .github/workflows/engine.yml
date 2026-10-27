@@ -31,6 +31,33 @@ jobs:
           python3 scripts/build_synology_installer.py
       - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose config --quiet
       - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose -f compose.yml -f compose.management.yml config --quiet
+      - name: Validate standalone app ingress isolation
+        env:
+          APP_INGRESS_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          APP_INGRESS_ROOT: /opt/compose-ci/ingress
+          APP_INGRESS_PARENT: /opt/compose-ci
+          APP_INGRESS_NODE_NAME: example-apps
+          APP_INGRESS_BACKEND_NETWORK: example-app-backends
+          APP_INGRESS_APPROVAL_KEY: /opt/compose-ci/control/secrets/approval-service.key
+          APP_INGRESS_APPROVAL_RUN: /opt/compose-ci/control/approval-run
+          APP_INGRESS_CONTROL_CONTAINER: example-control
+          APP_INGRESS_MANAGEMENT_HOST: control.example.ts.net:8443
+        run: |
+          docker compose -f compose.app-ingress.yml --profile gateway --profile bootstrap config --format json > /tmp/app-ingress.json
+          python3 - <<'PYCODE'
+          import json
+          cfg = json.load(open('/tmp/app-ingress.json'))
+          services = cfg['services']
+          assert services['ingress-broker']['network_mode'] == 'none'
+          assert services['app-proxy']['user'] == '10007:10007'
+          assert services['ingress-gateway']['network_mode'] == 'container:example-control'
+          for name, service in services.items():
+              assert not service.get('ports') and not service.get('privileged')
+              assert not any(v['source'] == '/var/run/docker.sock' for v in service.get('volumes', []))
+              if name in ('app-tailscale', 'app-proxy', 'ingress-gateway'):
+                  assert not any('approval' in v['target'] or 'secrets' in v['target'] for v in service.get('volumes', []))
+          assert set(services['app-tailscale']['networks']) == {'application_backends'}
+          PYCODE
       - name: Validate minimal Synology Compose profile
         env:
           CD_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -118,6 +145,8 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, verifier.provisioning, runner.runner, management.gateway, management.broker, deployer.service, authorization.server'
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
+      - name: Exercise standalone app ingress on disposable Docker networks
+        run: python3 scripts/test-app-ingress-network.py --image compose-cd-engine:test
       - name: Exercise first install, enrollment and repeated startup in disposable containers
         run: |
           docker run --rm --network none --user 0:0 \

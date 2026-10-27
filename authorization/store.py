@@ -139,7 +139,7 @@ class Store(PairingStore):
         if op == 'paired':
             schema.fields(value, {'agent', 'public_key', 'audience'})
             return self.paired(value['agent'], value['public_key'], value['audience'])
-        if op == 'transaction_authorize':
+        if op in ('transaction_authorize', 'ingress_authorize'):
             schema.fields(value, {'agent', 'project', 'plan', 'policy', 'scope', 'task'})
             require(schema.HEX.fullmatch(value['plan']) and schema.HEX.fullmatch(value['task']))
             binding = schema.fingerprint({k:v for k,v in value.items() if k != 'task'})
@@ -149,6 +149,15 @@ class Store(PairingStore):
                 rows = db.execute('SELECT * FROM grants WHERE agent=? AND project=? AND plan=? AND policy=?',
                                   (value['agent'],value['project'],value['plan'],value['policy'])).fetchall()
                 for row in rows:
+                    if op == 'ingress_authorize':
+                        # Independent ingress authority: never sandbox or persistent grants,
+                        # and only a real transaction-bound Passkey credential may issue it.
+                        if (value['project'] != 'shared-app-ingress'
+                                or value['scope'].get('operations') != ['shared_ingress_apply']
+                                or row['mode'] != 'once' or not row['credential']
+                                or not db.execute('SELECT 1 FROM credentials WHERE id=? AND active=1',
+                                                  (row['credential'],)).fetchone()):
+                            continue
                     if json.loads(row['scope']) != value['scope'] or (row['expires'] and row['expires'] <= time.time()):
                         continue
                     if bound:
