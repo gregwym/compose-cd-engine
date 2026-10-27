@@ -23,6 +23,13 @@ class Client:
         schema.name(agent); schema.name(project)
         schema.check(len(key) >= 32)
         self.endpoint, self.agent, self.project, self.key = endpoint.rstrip('/'), agent, project, key
+        self.signer = None
+        if key.startswith(b'-----BEGIN'):
+            from authorization import agents
+            self.signer = agents.load_private(key)
+            self.public_key = agents.public_key(self.signer)
+            schema.check(agent == agents.identity(self.public_key))
+            self.audience = url.hostname
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *_args, **_kwargs):
                 return None
@@ -31,11 +38,18 @@ class Client:
     def call(self, operation, payload=None):
         value = {'version': 2, 'agent': self.agent, 'project': self.project, 'operation': operation,
                  'request_id': uuid.uuid4().hex, 'timestamp': int(time.time()), 'payload': payload or {}}
+        if self.signer:
+            value.update(public_key=self.public_key, audience=self.audience)
         raw = schema.canonical(value).encode()
         validate(raw)
         route = next(path for path, op in ROUTES.items() if op == operation)
+        if self.signer:
+            from authorization.agents import sign
+            sig = sign(raw, self.signer)
+        else:
+            sig = signature(raw, self.key)
         request = urllib.request.Request(self.endpoint + route, raw,
-            {'Content-Type': 'application/json', 'X-Management-Signature': signature(raw, self.key)}, method='POST')
+            {'Content-Type': 'application/json', 'X-Management-Signature': sig}, method='POST')
         with self.opener.open(request, timeout=15) as response:
             data = response.read(65537)
             schema.check(len(data) <= 65536)
@@ -165,10 +179,10 @@ class Workflow:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['deploy', 'plan', 'apply', 'task', 'status', 'projects', 'grants', 'grant_status', 'start', 'stop', 'restart', 'diagnose', 'retire'])
+    parser.add_argument('operation', choices=['deploy', 'plan', 'apply', 'task', 'status', 'projects', 'grants', 'grant_status', 'start', 'stop', 'restart', 'diagnose', 'retire', 'inventory', 'inventory_request'])
     parser.add_argument('project')
     parser.add_argument('--endpoint', required=True, help='private HTTPS origin; no path')
-    parser.add_argument('--agent', default='openclaw')
+    parser.add_argument('--agent', help='defaults to PEM public-key identity, or openclaw for legacy HMAC')
     parser.add_argument('--secret-file', required=True)
     parser.add_argument('--spec')
     parser.add_argument('--id')
@@ -179,13 +193,22 @@ def main():
     parser.add_argument('--timeout', type=int, default=3600)
     args = parser.parse_args()
     schema.number(args.timeout, 1, 86400); schema.number(args.lifetime, 60, 31536000)
-    client = Client(args.endpoint, args.agent, args.project, private(args.secret_file, 4096).strip())
+    key = private(args.secret_file, 4096).strip()
+    if key.startswith(b'-----BEGIN'):
+        from authorization import agents
+        agent = agents.identity(agents.public_key(agents.load_private(key)))
+    else:
+        agent = 'openclaw'
+    client = Client(args.endpoint, args.agent or agent, args.project, key)
     spec = json.loads(private(args.spec, 59000)) if args.spec else None
     if args.operation == 'deploy':
         schema.check(args.state is not None and not args.id)
         return Workflow(client, args.state, spec, args.mode, args.lifetime).run(args.follow, args.timeout)
     schema.check(not args.state and not args.follow)
-    if args.operation == 'plan':
+    if args.operation == 'inventory_request':
+        schema.check(spec is None and args.id is None)
+        payload = {'mode': args.mode, 'lifetime': args.lifetime}
+    elif args.operation == 'plan':
         schema.check(spec is not None and not args.id)
         payload = spec
     elif args.operation in ('apply', 'task', 'grant_status'):

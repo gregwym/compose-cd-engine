@@ -43,6 +43,11 @@ function disclosure(parent, title) {
   const node = document.createElement('details'); text(node, 'summary', title); parent.append(node); return node;
 }
 function permissions(parent, scope) {
+  if (scope.read_only) {
+    text(parent, 'p', 'READ ONLY: deployed application inventory across this NAS, including applications not managed by deployer.');
+    text(parent, 'p', 'Visible fields: ' + (scope.fields || []).join(', ') + '. No environment values, host paths, logs or application data.');
+    text(parent, 'p', 'This does not permit starting, stopping, updating, importing or taking over applications.');
+  }
   if ('egress' in scope) text(parent, 'p', scope.egress ? 'Network: outbound access allowed.' : 'Network: outbound access blocked.');
   if (scope.operations) text(parent, 'p', 'Allowed actions: ' + scope.operations.join(', '));
   for (const [name, service] of Object.entries(scope.services || {})) {
@@ -68,6 +73,33 @@ async function refresh() {
   el('content').replaceChildren();
   if (!session.authenticated) return;
   const data = await api('data');
+  const pairingFocus = location.pathname.startsWith('/pairings/') ? location.pathname.split('/')[2] : '';
+  text(el('content'), 'h2', 'Pair an agent');
+  for (const pair of (data.pairings || []).filter(p => !pairingFocus || p.id === pairingFocus)) {
+    const box = document.createElement('article'); el('content').append(box);
+    text(box, 'h3', pair.label + ' · ' + pair.status);
+    text(box, 'p', 'Agent identity: ' + pair.agent);
+    text(box, 'p', 'Compare this fingerprint with the requesting device before pairing. A device label is not proof of identity.');
+    text(box, 'pre', pair.fingerprint);
+    text(box, 'p', 'Pairing identifies the agent only. Reading NAS applications and modifying them require separate authorization.');
+    if (pair.status === 'pending') {
+      const label = document.createElement('label'); box.append(label);
+      const matched = document.createElement('input'); matched.type = 'checkbox'; label.append(matched);
+      text(label, 'span', 'I compared the fingerprint with my requesting device.');
+      button(box, 'Pair with Passkey', async () => {
+        if (!matched.checked) throw new Error('Compare the fingerprint with the requesting device first.');
+        await ceremony('pair', pair.id); await refresh();
+      });
+      button(box, 'Deny pairing with Passkey', async () => { await ceremony('deny_pair', pair.id); await refresh(); });
+    }
+  }
+  const paired = disclosure(el('content'), 'Paired agents');
+  for (const agent of data.agents || []) {
+    text(paired, 'p', agent.label + ' · ' + agent.id + ' · ' + agent.status);
+    if (agent.status === 'active') button(paired, 'Disconnect agent and revoke its grants with Passkey', async () => {
+      await ceremony('unpair', agent.id); await refresh();
+    });
+  }
   const focus = location.pathname.startsWith('/requests/') ? location.pathname.split('/')[2] : '';
   text(el('content'), 'h2', 'Requests');
   for (const request of data.requests.filter(r => !focus || r.request_id === focus)) {

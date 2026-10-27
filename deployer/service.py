@@ -108,16 +108,28 @@ class Service:
         require(not require_enabled or cfg['enabled'], 'forbidden_by_policy')
         return cfg
 
-    def dispatch(self, value, agent=None):
+    def dispatch(self, value, agent=None, paired=False):
         value = schema.request(schema.canonical(value).encode())
         schema.check(abs(int(time.time()) - value['timestamp']) <= 60)
         reserve_nonce(value, str(self.root / 'nonces.sqlite'))
         project, op, payload = value['project'], value['operation'], value['payload']
-        cfg = self.policy(require_enabled=op not in ('status', 'task', 'stop'))
-        require('authorization' not in cfg or agent in cfg['authorization']['agents'], 'v2_required')
+        inventory = op in ('inventory', 'inventory_request')
+        cfg = self.policy(require_enabled=op not in ('status', 'task', 'stop', 'grant_status', 'grants', 'projects') and not inventory)
+        require('authorization' not in cfg or agent in cfg['authorization']['agents'] or paired, 'v2_required')
         if 'authorization' not in cfg:
             require(agent is None, 'authorization_not_configured')
-        require(op in cfg['operations'], 'forbidden_by_policy')
+        # Inventory is an independent Passkey capability, available even while
+        # application provisioning is disabled. It cannot reach mutation paths.
+        require(op in cfg['operations'] or inventory, 'forbidden_by_policy')
+        if inventory:
+            require(agent is not None and 'authorization' in cfg)
+            from authorization.pairing import INVENTORY_PROJECT
+            require(project == INVENTORY_PROJECT)
+            if op == 'inventory_request':
+                return rpc.call(cfg['authorization'], 'inventory_request', {'agent': agent, **payload})
+            rpc.call(cfg['authorization'], 'inventory_access', {'agent': agent})
+            from deployer.inventory import collect
+            return collect(self.docker)
         if agent:
             with self.db() as db:
                 owner = db.execute('SELECT agent FROM project_auth WHERE id=?', (project,)).fetchone()
@@ -302,6 +314,13 @@ class Service:
         raw = wire['raw'].encode()
         value = request(raw)
         cfg = self.policy(require_enabled=False)
+        if 'public_key' in value:
+            from authorization.agents import authenticate as verify_agent
+            verify_agent(raw, wire['signature'], str(self.root / 'agent-nonces.sqlite'), request, reserve=False)
+            rpc.call(cfg['authorization'], 'paired', {k: value[k] for k in ('agent', 'public_key', 'audience')})
+            reserve_nonce(value, str(self.root / 'agent-nonces.sqlite'))
+            return self.dispatch({k: v for k, v in value.items() if k not in ('agent', 'version', 'public_key', 'audience')},
+                                 agent=value['agent'], paired=True)
         require(value['agent'] in cfg.get('authorization', {}).get('agents', {}))
         path = protected_file(cfg['authorization']['agents'][value['agent']])
         schema.check(not path.stat().st_mode & 0o027)

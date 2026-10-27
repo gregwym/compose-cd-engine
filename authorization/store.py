@@ -7,9 +7,10 @@ import uuid
 from contextlib import contextmanager
 from deployer import schema
 from authorization.scope import diff, require
+from authorization.pairing import PairingStore
 
 
-class Store:
+class Store(PairingStore):
     def __init__(self, path, origin):
         self.path, self.origin = str(path), origin
         with self.db() as db:
@@ -24,6 +25,7 @@ class Store:
                 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT,'immutable audit'); END;
                 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT,'immutable audit'); END;
             ''')
+            self.init_pairing(db)
 
     @contextmanager
     def db(self):
@@ -62,6 +64,13 @@ class Store:
         return db.execute("SELECT * FROM grants WHERE agent=? AND project=? AND status='active' AND (expires=0 OR expires>?)",
                           (agent, project, int(time.time()))).fetchall()
 
+    @staticmethod
+    def require_active_agent(db, agent):
+        # Fingerprint identities belong to the live pairing registry; explicit
+        # legacy HMAC identities keep their existing administrator configuration.
+        if agent.startswith('agent-'):
+            require(db.execute("SELECT 1 FROM paired_agents WHERE id=? AND status='active'", (agent,)).fetchone())
+
     def check(self, value):
         with self.db() as db:
             best, selected = value['scope'], None
@@ -85,6 +94,7 @@ class Store:
         require(type(value['lifetime']) is int and 60 <= value['lifetime'] <= 31536000)
         now = int(time.time())
         with self.db() as db:
+            self.require_active_agent(db, value['agent'])
             existing = db.execute('SELECT * FROM requests WHERE plan=? AND agent=?', (value['plan'], value['agent'])).fetchone()
             if existing:
                 require(existing['spec_hash'] == value['spec_hash'] and existing['policy'] == value['policy'], 'stale_request')
@@ -113,6 +123,7 @@ class Store:
     def issue(self, db, rid, admin, credential):
         row = db.execute('SELECT * FROM requests WHERE id=?', (rid,)).fetchone()
         require(row is not None and row['status'] == 'pending' and row['expires'] > time.time(), 'stale_request')
+        self.require_active_agent(db, row['agent'])
         now, gid = int(time.time()), uuid.uuid4().hex
         expires = now + row['lifetime'] if row['mode'] == 'expiring' else (row['expires'] if row['mode'] == 'once' else 0)
         db.execute('INSERT INTO grants VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -123,6 +134,14 @@ class Store:
 
     def rpc(self, op, value):
         # Service-key API cannot issue/modify grants or register credentials.
+        if op == 'paired':
+            schema.fields(value, {'agent', 'public_key', 'audience'})
+            return self.paired(value['agent'], value['public_key'], value['audience'])
+        if op == 'inventory_request':
+            return self.inventory_request(value)
+        if op == 'inventory_access':
+            schema.fields(value, {'agent'})
+            return self.inventory_access(value['agent'])
         if op == 'propose':
             return self.propose(value)
         if op == 'check':

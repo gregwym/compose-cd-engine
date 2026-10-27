@@ -77,7 +77,8 @@ iPhone 打开 Tailscale，再用 **Safari** 打开该地址，粘贴注册码并
 - Container Manager 中 `configure`、`runner`、`management`、`approval`、`project-verifier` 应显示健康；`tailscale` 的登录和 Serve 状态查看自身日志。**容器启动不等于 HTTPS / Passkey 实机验证完成**。
 - 审批页可打开、能注册并登录 Passkey 后，才算首次安装验收完成。
 - 初始应用策略保持 `enabled: false`，示例镜像仅占位，未授权任何真实应用部署。应用策略、存储范围和代理配对属于后续配置，不阻塞引擎安装。
-- 代理密钥在 `config/agent-keys/openclaw.key`；不要给代理服务密钥、审批数据库或 DSM 管理员权限。连接客户端的手工参考见 [旧指南第 9 节](https://github.com/kurisu-agi/compose-cd-engine/blob/main/docs/synology-deployment-manual.zh-CN.md#9-连接-macnas--mac)，新布局下密钥位置以上述路径为准。
+- 推荐用 [Passkey 配对代理与独立只读清单授权](agent-pairing-inventory.md)：代理在自己的机器生成私钥，你核对指纹并用 Passkey 配对；不必复制 NAS 密钥。配对只确认身份，读取已部署应用需另外授权，不自动接管或授予启停／更新权限。
+- 旧 HMAC 代理密钥 `config/agent-keys/openclaw.key` 保留兼容；不要给代理服务密钥、审批数据库或 DSM 管理员权限。旧客户端手工参考见 [旧指南第 9 节](https://github.com/kurisu-agi/compose-cd-engine/blob/main/docs/synology-deployment-manual.zh-CN.md#9-连接-macnas--mac)，新布局下密钥位置以上述路径为准。
 
 ## 日常使用
 

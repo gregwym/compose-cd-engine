@@ -3,12 +3,17 @@ import json
 import tempfile
 import threading
 import unittest
+import time
+import uuid
 from pathlib import Path
 from authorization.server import Handler
 from authorization.passkeys import Passkeys
 from authorization.store import Store
 from receiver.receiver import BoundedHTTPServer
 from test_authorization import Authenticator, ORIGIN, RP
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from authorization import agents
+from deployer import schema
 
 
 class BrowserApprovalFlow(unittest.TestCase):
@@ -81,6 +86,51 @@ class BrowserApprovalFlow(unittest.TestCase):
             self.assertEqual(self.call('/api/begin', {'action': 'login'}, extra)[0], 403)
         self.assertEqual(self.call('/api/finish', {'approved': True})[0], 403)
         self.assertEqual(self.call('/api/data')[0], 403)
+
+    def test_active_agents_remain_visible_after_large_revoked_history(self):
+        _, session = self.call('/api/session'); self.csrf = session['csrf']
+        self.ceremony('enroll', token=self.server.store.bootstrap('owner'))
+        self.ceremony('login')
+        with self.server.store.db() as db:
+            for i in range(65):
+                db.execute('INSERT INTO paired_agents VALUES (?,?,?,?,?,?,?)',
+                           ('old-' + str(i), 'a'*64, 'old', 'owner', None, i, 'revoked'))
+            db.execute('INSERT INTO paired_agents VALUES (?,?,?,?,?,?,?)',
+                       ('current-agent', 'b'*64, 'active', 'owner', None, 100, 'active'))
+        code, data = self.call('/api/data')
+        self.assertEqual(code, 200)
+        self.assertEqual(data['agents'][0]['id'], 'current-agent')
+        self.ceremony('unpair', 'current-agent')
+        self.assertEqual(self.call('/api/data')[0], 200)
+
+    def test_signed_agent_pairing_then_fresh_browser_passkey(self):
+        _, session = self.call('/api/session'); self.csrf = session['csrf']
+        self.ceremony('enroll', token=self.server.store.bootstrap('owner'))
+        key = Ed25519PrivateKey.generate(); public = agents.public_key(key)
+        value = {'agent': agents.identity(public), 'public_key': public, 'audience': RP,
+                 'operation': 'pair', 'label': '<untrusted device label>',
+                 'request_id': uuid.uuid4().hex, 'timestamp': int(time.time())}
+        raw = schema.canonical(value).encode()
+        headers = {'Host': RP, 'Content-Type': 'application/json', 'X-Agent-Signature': agents.sign(raw,key)}
+        def post(extra=None):
+            client = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+            client.request('POST', '/agent/pair', raw, {**headers, **(extra or {})})
+            response = client.getresponse(); result = response.status, json.loads(response.read())
+            client.close(); return result
+        self.assertEqual(post({'Origin': 'https://evil.invalid'})[0], 403)
+        code, result = post(); self.assertEqual(code, 200)
+        self.assertEqual(result['status'], 'pending')
+        self.assertEqual(post()[0], 403)  # nonce replay, even before approval
+        self.assertEqual(self.call('/api/data')[0], 403)
+        self.ceremony('login')
+        _, data = self.call('/api/data')
+        self.assertEqual(data['pairings'][0]['label'], value['label'])
+        self.assertIn('fingerprint', data['pairings'][0])
+        self.assertNotIn('public_key', data['pairings'][0])
+        self.ceremony('pair', result['approval_url'].split('/')[-1])
+        self.assertEqual(self.server.store.paired(value['agent'], public, RP)['status'], 'paired')
+        with self.assertRaises(Exception):
+            self.server.store.inventory_access(value['agent'])
 
 
 if __name__ == '__main__':

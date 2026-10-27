@@ -7,14 +7,21 @@ ROUTES = {'/v2/plans': 'plan', '/v2/deployments': 'apply', '/v2/tasks': 'task',
           '/v2/grants': 'grants', '/v2/projects': 'projects', '/v2/projects/status': 'status',
           '/v2/projects/start': 'start', '/v2/projects/stop': 'stop',
           '/v2/projects/restart': 'restart', '/v2/projects/diagnose': 'diagnose',
-          '/v2/projects/retire': 'retire'}
+          '/v2/projects/retire': 'retire', '/v2/inventory': 'inventory',
+          '/v2/inventory-requests': 'inventory_request'}
 
 
 def request(raw):
     schema.check(len(raw) <= 60000)
     value = json.loads(raw)
-    schema.fields(value, {'version', 'agent', 'project', 'operation', 'request_id', 'timestamp', 'payload'})
+    schema.fields(value, {'version', 'agent', 'project', 'operation', 'request_id', 'timestamp', 'payload'}, {'public_key', 'audience'})
     schema.check(value['version'] == 2)
     schema.name(value['agent'])
-    schema.request(schema.canonical({k: v for k, v in value.items() if k not in ('version', 'agent')}).encode())
+    if 'public_key' in value:
+        from authorization.agents import identity
+        schema.check(identity(value['public_key']) == value['agent'])
+        schema.check(isinstance(value.get('audience'), str) and 0 < len(value['audience']) <= 253)
+    else:
+        schema.check('audience' not in value)
+    schema.request(schema.canonical({k: v for k, v in value.items() if k not in ('version', 'agent', 'public_key', 'audience')}).encode())
     return value

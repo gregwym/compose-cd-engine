@@ -126,6 +126,47 @@ start=call("/api/begin",{"action":"login","target":""})
 call("/api/finish",{"ceremony_id":start["ceremony_id"],"response":auth.response(start,origin=origin,rp="deployer.tail123.ts.net")})
 assert call("/api/session")["authenticated"]
 '''
+        ceremony += '''
+import time,uuid
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from authorization import agents
+from authorization.protocol import ROUTES
+from deployer import schema
+key=Ed25519PrivateKey.generate()
+public=agents.public_key(key)
+agent=agents.identity(public)
+host="deployer.tail123.ts.net"
+def signed(path,value,port=18792):
+ raw=schema.canonical(value).encode()
+ c=http.client.HTTPConnection("127.0.0.1",port,timeout=15)
+ header="X-Agent-Signature" if port==18793 else "X-Management-Signature"
+ c.request("POST",path,raw,{"Host":host,"Content-Type":"application/json",header:agents.sign(raw,key)})
+ r=c.getresponse(); data=json.loads(r.read()); assert r.status==200,(r.status,data)
+ c.close(); return data
+def request(op,payload=None):
+ value={"version":2,"agent":agent,"public_key":public,"audience":host,"project":"nas-inventory",
+        "operation":op,"payload":payload or {},"request_id":uuid.uuid4().hex,"timestamp":int(time.time())}
+ return signed(next(p for p,o in ROUTES.items() if o==op),value)
+def approve(action,target):
+ begin=call("/api/begin",{"action":action,"target":target})
+ call("/api/finish",{"ceremony_id":begin["ceremony_id"],"response":auth.response(begin,origin=origin,rp=host)})
+assert request("inventory")["status"]=="not_authorized"
+paired=signed("/agent/pair",{"agent":agent,"public_key":public,"audience":host,"label":"Disposable smoke client",
+    "operation":"pair","request_id":uuid.uuid4().hex,"timestamp":int(time.time())},18793)
+assert paired["status"]=="pending"
+approve("pair",paired["approval_url"].split("/")[-1])
+assert request("inventory")["status"]=="not_authorized"
+req=request("inventory_request",{"mode":"persistent","lifetime":3600})
+approve("approve",req["request_id"])
+result=request("inventory")
+assert result["containers"] and result["read_only"] and not result["managed_access_granted"]
+assert all(set(c)=={"name","project","service","image","state"} for c in result["containers"])
+grant=next(g for g in call("/api/data")["grants"] if g["agent"]==agent and g["project"]=="nas-inventory")
+approve("revoke",grant["id"])
+assert request("inventory")["status"]=="not_authorized"
+approve("unpair",agent)
+assert request("inventory")["status"]=="not_authorized"
+'''
         runner = services['approval']
         fixtures = root / 'auth-fixtures'
         shutil.copytree(source / 'tests', fixtures, ignore=shutil.ignore_patterns('__pycache__'))
@@ -141,7 +182,7 @@ assert call("/api/session")["authenticated"]
         code_logs = compose('logs', '--no-color', 'approval')
         code = [line.split('administrator only): ', 1)[1] for line in code_logs.splitlines() if 'administrator only): ' in line][-1]
         subprocess.run([*command, 'exec', '-T', 'approval', 'python3', '-c', ceremony], input=code.encode(), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print('PASS: actual WebAuthn enrollment + login through packaged approval HTTP service', flush=True)
+        print('PASS: packaged WebAuthn enrollment/login, Ed25519 pairing, separate inventory authorization, real Docker read and revocation', flush=True)
         keys = {str(p.relative_to(project)): hashlib.sha256(p.read_bytes()).hexdigest() for p in project.glob('config/**/key')}
         identity = project / 'state/approval/authorization.sqlite'
         sentinel = project / 'apps/downloads/retained-media'

@@ -1,5 +1,7 @@
 # Agent-native authorization (opt-in v2)
 
+For Passkey-confirmed public-key agent pairing and a separate read-only deployed-application inventory grant, see [pairing and inventory](agent-pairing-inventory.md). Legacy HMAC identities remain supported; pairing is not application authorization.
+
 Implementation request: [issue #1, agent authorization](https://github.com/kurisu-agi/compose-cd-engine/issues/1#issuecomment-6260815018).
 
 ## Design and evidence

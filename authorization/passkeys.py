@@ -27,13 +27,19 @@ class Passkeys:
         elif action == 'remove':
             row = db.execute('SELECT admin,hex(id) AS id,active FROM credentials WHERE hex(id)=?', (target.upper(),)).fetchone()
             require(row is not None and row['active'])
+        elif action in ('pair', 'deny_pair'):
+            row = db.execute('SELECT * FROM pairings WHERE id=?', (target,)).fetchone()
+            require(row and row['status'] == 'pending' and row['expires'] > time.time(), 'stale_request')
+        elif action == 'unpair':
+            row = db.execute('SELECT * FROM paired_agents WHERE id=?', (target,)).fetchone()
+            require(row and row['status'] == 'active')
         else:
             require(action in ('login', 'enroll'))
             return action
         return schema.fingerprint({k: (v.hex() if isinstance(v, bytes) else v) for k, v in dict(row).items()})
 
     def begin(self, session, action, target='', token=None, admin=None):
-        require(action in ('login', 'enroll', 'approve', 'deny', 'revoke', 'remove'))
+        require(action in ('login', 'enroll', 'approve', 'deny', 'revoke', 'remove', 'pair', 'deny_pair', 'unpair'))
         with self.store.db() as db:
             require(db.execute('SELECT count(*) FROM ceremonies WHERE expires>?', (int(time.time()),)).fetchone()[0] < 100)
             db.execute('DELETE FROM ceremonies WHERE expires<?', (int(time.time()),))
@@ -94,7 +100,19 @@ class Passkeys:
             require(not (owner['counter'] or counter) or counter > owner['counter'])
             db.execute('UPDATE credentials SET counter=? WHERE id=?', (counter, cred.credential_id))
             admin = owner['admin']
-            if action == 'approve':
+            if action == 'pair':
+                self.store.approve_pair(db, target, admin, cred.credential_id)
+            elif action == 'deny_pair':
+                db.execute("UPDATE pairings SET status='denied' WHERE id=?", (target,))
+                self.store.event(db, admin, 'pairing_denied', target)
+            elif action == 'unpair':
+                db.execute("UPDATE paired_agents SET status='revoked' WHERE id=?", (target,))
+                db.execute("UPDATE grants SET status='revoked',revision=revision+1,revoked=? WHERE agent=? AND status='active'",
+                           (int(time.time()), target))
+                db.execute("UPDATE requests SET status='denied' WHERE agent=? AND status='pending'", (target,))
+                db.execute("UPDATE pairings SET status='denied' WHERE agent=? AND status='pending'", (target,))
+                self.store.event(db, admin, 'agent_unpaired', target)
+            elif action == 'approve':
                 self.store.issue(db, target, admin, cred.credential_id)
             elif action == 'deny':
                 db.execute("UPDATE requests SET status='denied' WHERE id=?", (target,))

@@ -7,7 +7,8 @@ from pathlib import PurePosixPath
 
 MAX_REQUEST = 65536
 OPS = frozenset({'plan', 'apply', 'task', 'status', 'start', 'stop', 'restart',
-                 'grant_request', 'grant_status', 'grants', 'projects', 'diagnose', 'retire'})
+                 'grant_request', 'grant_status', 'grants', 'projects', 'diagnose', 'retire',
+                 'inventory', 'inventory_request'})
 NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 HEX = re.compile(r'[a-f0-9]{32}')
 IMAGE = re.compile(r'([a-z0-9][a-z0-9./_-]+)@sha256:([a-f0-9]{64})')
@@ -71,6 +72,10 @@ def request(raw):
     op = value['operation']
     if op == 'plan':
         fields(payload, {'services'}, {'egress'})
+    elif op == 'inventory_request':
+        fields(payload, {'mode', 'lifetime'})
+        check(payload['mode'] in ('once', 'persistent', 'expiring'))
+        number(payload['lifetime'], 60, 31536000)
     elif op == 'grant_request':
         fields(payload, {'plan_id', 'mode', 'lifetime'})
         check(HEX.fullmatch(payload['plan_id']) and payload['mode'] in ('once', 'persistent', 'expiring'))

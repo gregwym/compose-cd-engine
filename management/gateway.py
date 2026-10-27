@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import sqlite3
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from receiver.receiver import BoundedHTTPServer
@@ -100,16 +101,27 @@ class Gateway(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError('truncated body')
             secret = self.secret
+            verified = False
             if v2:
                 parsed = agent_request(raw)
-                if parsed['operation'] != ROUTES[self.path] or parsed['agent'] not in self.cfg['agents']:
+                if parsed['operation'] != ROUTES[self.path]:
                     raise ValueError('invalid route or identity')
-                secret = protected_file(self.cfg['agents'][parsed['agent']]).read_bytes().strip()
+                if 'public_key' in parsed:
+                    from authorization.agents import authenticate as verify_agent
+                    if parsed['audience'] != urlsplit('//' + self.headers.get('Host', '')).hostname:
+                        raise ValueError('invalid audience')
+                    value = verify_agent(raw, self.headers['X-Management-Signature'], self.cfg['nonce_db'], agent_request, reserve=False)
+                    verified = True
+                else:
+                    if parsed['agent'] not in self.cfg['agents']:
+                        raise ValueError('invalid route or identity')
+                    secret = protected_file(self.cfg['agents'][parsed['agent']]).read_bytes().strip()
             elif 'agents' in self.cfg and (provisioning or self.cfg.get('legacy_compat') is not True):
                 raise ValueError('v2 required')
-            value = authenticate(raw, self.headers['X-Management-Signature'], secret, self.cfg['nonce_db'],
-                                 validator=agent_request if v2 else (schema.request if provisioning else request),
-                                 limit=limit)
+            if not verified:
+                value = authenticate(raw, self.headers['X-Management-Signature'], secret, self.cfg['nonce_db'],
+                                     validator=agent_request if v2 else (schema.request if provisioning else request),
+                                     limit=limit)
             if provisioning or v2:
                 if not v2 and value['operation'] not in self.cfg['deployer']['operations']:
                     raise ValueError('not authorized')

@@ -77,11 +77,20 @@ class Handler(BaseHTTPRequestHandler):
                               | {'scope': json.loads(r['scope'])} for r in db.execute('SELECT * FROM grants ORDER BY rowid DESC LIMIT 100')]
                     credentials = [{'id': bytes(r['id']).hex()} for r in db.execute('SELECT id FROM credentials WHERE admin=? AND active=1', (session['admin'],))]
                     events = [dict(r) for r in db.execute('SELECT * FROM audit ORDER BY seq DESC LIMIT 100')]
+                    pairings = [dict(r) for r in db.execute('SELECT * FROM pairings ORDER BY rowid DESC LIMIT 100')]
+                    agents = [dict(r) for r in db.execute("SELECT id,label,public_key,status FROM paired_agents ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, created DESC LIMIT 64")]
                 for request in requests:
                     request['grant_diff'] = self.server.store.check({'agent': request['agent'], 'project': request['project'],
                         'plan': request['plan_id'], 'policy': request['policy'], 'scope': request['scope']})['grant_diff']
-                return self.send(200, {'requests': requests, 'grants': grants, 'credentials': credentials, 'audit': events})
-            require(self.path in ('/', '/enroll') or (self.path.startswith('/requests/') and schema.HEX.fullmatch(self.path[10:])))
+                for pairing in pairings:
+                    if pairing['status'] == 'pending' and pairing['expires'] <= time.time():
+                        pairing['status'] = 'expired'
+                for item in pairings + agents:
+                    item['fingerprint'] = hashlib.sha256(bytes.fromhex(item.pop('public_key'))).hexdigest()
+                return self.send(200, {'requests': requests, 'grants': grants, 'credentials': credentials, 'audit': events,
+                                      'pairings': pairings, 'agents': agents})
+            require(self.path in ('/', '/enroll') or any(self.path.startswith(prefix) and schema.HEX.fullmatch(self.path[len(prefix):])
+                    for prefix in ('/requests/', '/pairings/')))
             self.send(200, Path(__file__).with_name('index.html').read_bytes(), 'text/html; charset=utf-8')
         except Exception:
             self.send(403, {'status': 'denied'})
@@ -89,6 +98,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self.host()
+            if self.path == '/agent/pair':
+                # Agent-only proof-of-possession endpoint. No cookies or browser session.
+                require(not self.headers.get('Origin') and not self.headers.get('Transfer-Encoding')
+                        and self.headers.get('Content-Type') == 'application/json'
+                        and len(self.headers.get_all('Content-Length', [])) == 1
+                        and len(self.headers.get_all('X-Agent-Signature', [])) == 1)
+                length = int(self.headers['Content-Length'])
+                require(0 < length <= 2048)
+                self.connection.settimeout(5)
+                raw = self.rfile.read(length)
+                require(len(raw) == length)
+                return self.send(200, self.server.store.pair(raw, self.headers['X-Agent-Signature']))
             require(self.headers.get('Origin') == self.server.origin)
             require(self.headers.get('Content-Type') == 'application/json' and not self.headers.get('Transfer-Encoding')
                     and len(self.headers.get_all('Content-Length', [])) == 1)
