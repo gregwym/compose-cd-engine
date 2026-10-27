@@ -121,20 +121,21 @@ def inspect_project(docker, project, *, budget=6):
                          'administrator target registration required before adoption transaction']}
 
 
-def validate_baseline(baseline):
+def validate_inspection_baseline(baseline):
+    """Validate read-only structure without imposing adoption eligibility."""
     schema.check(isinstance(baseline,dict))
     inspection_scope(baseline['project'])
     rows = baseline['containers']
     schema.check(isinstance(rows,list) and 1<=len(rows)<=32)
-    ids,names,services=set(),set(),set()
+    ids,names=set(),set()
     for row in rows:
         schema.fields(row,set(FIELDS))
         require(row['project']==baseline['project'],'identity_drift')
         schema.check(isinstance(row['container_id'],str) and re.fullmatch('[a-f0-9]{64}',row['container_id']))
         schema.check(isinstance(row['image_id'],str) and re.fullmatch('sha256:[a-f0-9]{64}',row['image_id']))
         project_name(row['name']); project_name(row['service']); text(row['image'],256)
-        schema.check(row['container_id'] not in ids and row['name'] not in names and row['service'] not in services)
-        ids.add(row['container_id']); names.add(row['name']); services.add(row['service'])
+        schema.check(row['container_id'] not in ids and row['name'] not in names)
+        ids.add(row['container_id']); names.add(row['name'])
         path(row['working_dir'])
         schema.check(isinstance(row['config_files'],list) and 1<=len(row['config_files'])<=8)
         for item in row['config_files']: path(item)
@@ -159,6 +160,14 @@ def validate_baseline(baseline):
         require(row['state'] in ('created','running','paused','restarting','removing','exited','dead'))
     expected={'project':baseline['project'],'containers':rows}
     require(baseline['baseline_hash']==schema.fingerprint(expected),'baseline_drift')
+    return baseline
+
+
+def validate_baseline(baseline):
+    """Adoption requires one container per Compose service in addition to valid structure."""
+    validate_inspection_baseline(baseline)
+    services = [row['service'] for row in baseline['containers']]
+    schema.check(len(services) == len(set(services)))
     return baseline
 
 

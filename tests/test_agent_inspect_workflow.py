@@ -72,6 +72,40 @@ class InspectionContinuation(unittest.TestCase):
         self.assertEqual(self.flow().run(True, interval=0), 0)
         self.assertEqual(self.client.call.call_count, calls)
 
+    def test_scaled_service_inspection_stored_once_without_relaxing_adoption(self):
+        from deployer.adoption import inspect_project, validate_baseline, adoption_preview
+        template = self.structure()['containers'][0]
+        projected = {}
+        for index, cid in enumerate(('c'*64, 'e'*64), 1):
+            row = dict(template, container_id=cid, name='/private-container-' + str(index))
+            row['config_files'] = ','.join(row['config_files'])
+            row['mounts'] = [{'Type': 'bind', 'Source': '/private/data',
+                              'Destination': '/data', 'RW': True}]
+            row['ports'] = {'80/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '8080'}]}
+            row['networks'] = ['private-network', None]
+            projected[cid] = row
+        def docker(*args, **kwargs):
+            if args[0] == 'ps':
+                return ('\n'.join(projected) + '\n').encode()
+            self.assertEqual(args[0], 'inspect')
+            return json.dumps(projected[args[-1]]).encode()
+        structure = inspect_project(docker, self.client.project)
+        self.assertEqual([row['service'] for row in structure['containers']], ['web', 'web'])
+        with self.assertRaises(ValueError):
+            validate_baseline(structure)
+        with self.assertRaises(ValueError):
+            adoption_preview(structure)
+        flow = self.waiting()
+        self.client.call.side_effect = [self.request('approved'), structure]
+        self.assertEqual(flow.run(True, interval=0), 0)
+        self.assertEqual(json.loads(flow.output.read_text()), structure)
+        self.assertEqual(self.events[-1]['containers'], 2)
+        for sensitive in ('private-container', '/private/data', 'private-network'):
+            self.assertNotIn(sensitive, json.dumps(self.events) + self.path.read_text())
+        count = self.client.call.call_count
+        self.assertEqual(self.flow().run(True, interval=0), 0)
+        self.assertEqual(self.client.call.call_count, count)
+
     def test_initial_approved_still_polls_before_consuming(self):
         self.client.call.side_effect = [self.request('approved'), self.request('approved'), self.structure()]
         self.assertEqual(self.flow().run(True, interval=0), 0)

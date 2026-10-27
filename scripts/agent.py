@@ -313,8 +313,8 @@ class InspectWorkflow:
         result = self.client.call('inspect', {})
         if 'status' in result:
             return self.stop(self.terminal(result))
-        from deployer.adoption import validate_baseline
-        validate_baseline(result)
+        from deployer.adoption import validate_inspection_baseline
+        validate_inspection_baseline(result)
         schema.check(result['project'] == self.client.project and result['read_only'] is True
                      and result['managed_access_granted'] is False and result['adoption_ready'] is False)
         schema.check(not self.output.exists() and not self.output.is_symlink())
