@@ -220,7 +220,29 @@ class Store(PairingStore):
             if op == 'request':
                 row = db.execute('SELECT * FROM requests WHERE id=? AND agent=? AND project=?',
                                  (value['request_id'], value['agent'], value['project'])).fetchone()
-                return self.public_request(row)
+                result = self.public_request(row)
+                if result['scope'].get('type') == 'registered_task_v1':
+                    # Task-only additive result; approval alone is not live authority.
+                    self.require_active_agent(db, row['agent'])
+                    if row['status'] == 'approved':
+                        grant = db.execute('SELECT * FROM grants WHERE request=?', (row['id'],)).fetchone()
+                        require(grant is not None)
+                        for key in ('agent', 'project', 'plan', 'policy', 'scope', 'mode'):
+                            require(grant[key] == row[key], 'stale_request')
+                        if grant['status'] != 'active':
+                            result['status'] = grant['status']
+                        elif grant['revoked'] is not None:
+                            result['status'] = 'revoked'
+                        elif grant['mode'] != 'expiring' or grant['expires'] <= time.time():
+                            result['status'] = 'expired'
+                        elif not grant['credential'] or not db.execute(
+                                'SELECT 1 FROM credentials WHERE id=? AND active=1',
+                                (grant['credential'],)).fetchone():
+                            result['status'] = 'not_authorized'
+                        else:
+                            require(grant['expires'] == grant['created'] + row['lifetime'], 'stale_request')
+                            result['delegation_id'] = grant['id']
+                return result
             if op == 'grants':
                 return {'grants': [{'grant_id': r['id'], 'project': r['project'], 'scope': json.loads(r['scope']),
                                     'expires': r['expires'], 'revision': r['revision']} for r in self.grants(db, value['agent'], value['project'])]}

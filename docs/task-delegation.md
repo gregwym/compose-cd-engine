@@ -83,8 +83,10 @@ never paste private Compose/env into a public approval request):
 
 POST /v2/delegation/requests uses the existing signed v2 principal/project
 protocol, operation delegation_request and payload {lifetime: 3600}. Approval URL
-uses the existing Passkey ceremony. Read the resulting grant ID from v2 grants;
-that is delegation_id, not the request ID. Every delegated inspect/adoption-plan/
+uses the existing Passkey ceremony. The signed v2 grant_status for this exact registered-task request returns
+delegation_id only while its matching Passkey grant, credential and pairing are
+active and unexpired. That is the grant ID, not the request ID. Other request
+status responses retain their old behavior. Every delegated inspect/adoption-plan/
 adoption-apply explicitly supplies delegation_id. Plans store that ID immutably;
 adoption-request is not needed and is rejected for a delegated plan. Existing
 nondelegated requests keep separate once-only grants and are not implicitly
@@ -143,3 +145,45 @@ docker run --rm --network none --user 0:0 -v "$PWD:/app:ro" \
   -e CD_DISPOSABLE_CI=1 -e CD_SMOKE_IMAGE=compose-cd-engine:ingress-test \
   --entrypoint python3 compose-cd-engine:ingress-test -m scripts.smoke_task_delegation
 ```
+
+
+## Owner-held authorization continuation
+
+To avoid asking the owner to send an “approved” message, start a bounded signed
+poller before sending the emitted full-scope Passkey link. Example:
+
+    mkdir -m 700 /private/path/task-state
+    python -m scripts.task_delegation --endpoint https://runner.example.ts.net \
+      --key /private/path/agent.pem --project existing-app request \
+      --follow --state /private/path/task-state/grant.json \
+      --lifetime 3600 --timeout 3600 --interval 5
+
+The process emits an authorization_required event with the exact full scope,
+approval URL, request ID, mode and lifetime. It polls only signed grant_status
+for that request, then exits 0 with status=success, exact delegation_id and
+resume state path. No task mutation, extra grant, renewal, callback or message
+is performed. The completion owner must keep this process/result collection
+owned, relay the approval link, then explicitly drive the granted task stages.
+Do not promise a callback from this CLI. A successful result is a live check at
+that instant, not a lease bypassing subsequent server checks.
+
+Repeat the same command/state to resume after timeout or interruption. Restored
+state retains the original lifetime even if CLI defaults differ; endpoint,
+agent, project, request, plan, policy, full scope, mode and lifetime must remain
+bound. Completed resumptions recheck the same live grant, not an unrelated grant.
+The state includes private scope metadata (paths/identities), never private key
+or Compose/environment values: keep its directory owner-only (0700); atomic
+state and locking sidecar are 0600. Do not publish the state or scope events.
+Only one owner may access a state at a time; use the same stable lock sidecar.
+Timeout is 1..86400 seconds, polling interval 1..300 seconds (default 5).
+Each HTTPS read has the existing 15-second transport timeout; an in-flight read
+can finish beyond the polling deadline. Exit 75 means bounded timeout, pending,
+backoff or retryable transport/local uncertainty; resume the same state. Three
+consecutive status transport failures stop resumably. Retry-After/429 stops for
+owner scheduling, never tight-loop retries. Exit 1 means terminal denial,
+revocation, expiry, unpairing, invalid binding or unknown request outcome.
+A lost request response/crash after durable request intent is terminal
+outcome_unknown: never automatically create a replacement request. The owner
+must reconcile that request independently. Without --state the legacy explicit
+single request remains unchanged; --follow requires --state. Structural-only
+inspect_request --follow remains a separate workflow, not task authority.
