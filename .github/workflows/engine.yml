@@ -24,6 +24,7 @@ jobs:
       - run: python3 -m unittest discover -s tests -v
       - run: python3 scripts/generate_workflows.py --check
       - run: python3 scripts/check_public_tree.py
+      - run: node scripts/test-task-approval-ui.cjs
       - run: sh -n install.sh && bash -n scripts/sync-state.sh
       - name: Validate and package single-project Synology installer
         run: |
@@ -143,6 +144,8 @@ jobs:
         run: |
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 receiver/receiver.py --help
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, verifier.provisioning, runner.runner, management.gateway, management.broker, deployer.service, authorization.server'
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -m scripts.task_delegation --help
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -m scripts.agent --help
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
       - name: Exercise standalone app ingress on disposable Docker networks
@@ -166,6 +169,14 @@ jobs:
             -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD/scripts/smoke_adoption_transactions.py:/integration/smoke.py:ro" \
             compose-cd-engine:test python3 /integration/smoke.py
+      - name: Exercise one Passkey task grant against disposable Docker
+        run: |
+          docker run --rm --network none --user 0:0 \
+            -e CD_DISPOSABLE_CI=1 -e CD_SMOKE_IMAGE=compose-cd-engine:test \
+            -e PYTHONPATH=/app:/integration/tests \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/scripts:/app/scripts:ro" -v "$PWD/tests:/integration/tests:ro" \
+            compose-cd-engine:test python3 -m scripts.smoke_task_delegation
       - name: Exercise restricted management against disposable Docker services
         if: github.event_name == 'pull_request'
         run: |

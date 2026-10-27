@@ -40,7 +40,7 @@ class Combined(Transactions):
         self.assertNotIn('must-not-return',json.dumps(req))
         start = self.passkeys.begin('owner','approve',req['request_id'],admin='owner')
         self.passkeys.finish('owner',start['ceremony_id'],self.owner.response(start),admin='owner')
-        self.gid = self.store.rpc('grants',{'agent':self.agent,'project':'existing-app'})['grants'][-1]['grant_id']
+        self.gid = self.call('grants')['grants'][-1]['grant_id']
         return self.gid
 
     def dplan(self,action='observe'):
@@ -72,6 +72,32 @@ class Combined(Transactions):
             self.assertEqual(db.execute('SELECT count(*) FROM requests').fetchone()[0],1)
             self.assertEqual(db.execute('SELECT count(*) FROM grants').fetchone()[0],1)
             self.assertGreaterEqual(db.execute('SELECT count(*) FROM delegation_receipts').fetchone()[0],5)
+
+    def test_signed_authorization_metadata_survives_observe_and_redeploy(self):
+        for action in ('observe', 'redeploy'):
+            with self.subTest(action=action):
+                self.grant()
+                task = self.apply(self.dplan(action))
+                if action == 'observe':
+                    self.service.run_one()
+                else:
+                    with patch.object(self.service.adoption, 'prepare', return_value=(['docker','compose'], {})), patch.object(self.service.adoption, 'health'), patch('deployer.transactions.subprocess.run'):
+                        self.service.run_one()
+                self.assertEqual(self.task(task['task_id'])['status'], 'success')
+                self.assertIn(self.gid, [g['grant_id'] for g in self.call('grants')['grants']])
+                replacement = self.call('delegation_request', {'lifetime': 600})
+                self.assertEqual(self.call('grant_status', {'approval_id': replacement['request_id']})['status'], 'pending')
+                start = self.passkeys.begin('owner', 'approve', replacement['request_id'], admin='owner')
+                self.passkeys.finish('owner', start['ceremony_id'], self.owner.response(start), admin='owner')
+                self.assertEqual(self.call('grant_status', {'approval_id': replacement['request_id']})['status'], 'approved')
+                self.assertGreaterEqual(len(self.call('grants')['grants']), 2)
+                with self.assertRaises((Denied, ValueError)):
+                    self.call('grant_status', {'approval_id': replacement['request_id']}, agent='other-agent')
+                with self.assertRaises(Denied):
+                    self.service.dispatch_wire(self.wire('grant_status', {'approval_id': replacement['request_id']}, project='other-project'))
+                for operation in ('start', 'stop', 'restart'):
+                    with self.assertRaises(Denied):
+                        self.call(operation)
 
     def test_revoke_expiry_unpair_credential_stop_runner_and_broker(self):
         for state in ('revoke','expiry','unpair','credential'):

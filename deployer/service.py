@@ -149,6 +149,10 @@ class Service:
             from deployer.inventory import collect
             return collect(self.docker)
         if agent:
+            # Principal/project-bound authorization metadata is not provisioning.
+            # It must remain available to renew/revoke task access after adoption.
+            if op in ('grant_status', 'grants'):
+                return self.authorization_operation(db=None, cfg=cfg, agent=agent, project=project, op=op, payload=payload)
             with self.db() as db:
                 require(not db.execute('SELECT 1 FROM adopted_projects WHERE project=?', (project,)).fetchone(), 'use_adoption_api')
                 owner = db.execute('SELECT agent FROM project_auth WHERE id=?', (project,)).fetchone()
