@@ -8,9 +8,9 @@ import zipfile
 def build(output):
     root = Path(__file__).resolve().parent.parent
     with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-        for source, name in [('synology/compose.yaml', 'compose.yaml'),
+        for source, name in [('synology/compose.yaml', 'compose-deployer/compose.yaml'),
                              ('docs/synology-deployment.zh-CN.md', 'README.md')]:
-            archive.write(root / source, 'compose-deployer/' + name)
+            archive.write(root / source, name)
     return output
 
 

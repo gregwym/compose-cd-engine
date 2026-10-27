@@ -14,7 +14,9 @@ from scripts.build_synology_installer import build
 
 class DomainConfiguration(unittest.TestCase):
     def test_deployment_root_is_required_normalized_and_not_a_system_directory(self):
-        for value in (None, '', '.', '/', '//', '//srv/root', 'relative/path', '/srv/../data', '/srv/double//path', '/srv/path/', '/var/run/deployer', '/etc/deployer', '/srv/$PWD'):
+        for value in (None, '', '.', '/', '//', '//srv/root', 'relative/path', '/srv/../data', '/srv/double//path', '/srv/path/', '/var/run/deployer', '/etc/deployer', '/srv/$PWD',
+                      '/volume1', '/volume42', '/volume1/@docker', '/volume2/@appstore',
+                      '/volume2/@appstore/deployer', '/volume1/@other/nested'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 deployment_root(value)
         self.assertEqual(deployment_root('/volume2/containers/custom-name'), '/volume2/containers/custom-name')
@@ -70,6 +72,49 @@ class DomainConfiguration(unittest.TestCase):
 
 @unittest.skipUnless(os.geteuid() == 0, 'UID/GID isolation requires Linux container root')
 class Initialization(unittest.TestCase):
+    def test_unrelated_sibling_data_refused_without_any_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'
+            (root / 'plex/data').mkdir(parents=True)
+            data = root / 'plex/data/db'
+            data.write_bytes(b'existing database')
+            os.chown(root, 1026, 100)
+            root.chmod(0o777)
+            before = {p: p.lstat() for p in [root, *root.rglob('*')]}
+            with self.assertRaisesRegex(ValueError, 'existing data'):
+                initialize(root, '/volume1/docker')
+            self.assertEqual(set(root.rglob('*')), set(before) - {root})
+            for path, old in before.items():
+                current = path.lstat()
+                self.assertEqual((current.st_uid, current.st_gid, current.st_mode),
+                                 (old.st_uid, old.st_gid, old.st_mode))
+            self.assertEqual(data.read_bytes(), b'existing database')
+
+    def test_unknown_entries_and_unsafe_compose_inputs_refused(self):
+        for kind in ('file', 'directory', 'link', 'env-directory', 'compose-link', 'env-hardlink'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / 'root'
+                root.mkdir()
+                if kind == 'file':
+                    (root / 'unknown').write_text('unrelated')
+                elif kind == 'directory':
+                    (root / 'unknown').mkdir()
+                elif kind == 'link':
+                    (root / 'apps').symlink_to('/not-present')
+                elif kind == 'env-directory':
+                    (root / '.env').mkdir()
+                elif kind == 'compose-link':
+                    (root / 'compose.yaml').symlink_to('/not-present')
+                else:
+                    outside = Path(directory) / 'outside'
+                    outside.write_text('not owned by installer')
+                    os.link(outside, root / '.env')
+                before = root.stat()
+                with self.assertRaises(ValueError):
+                    initialize(root, '/srv/test/deployer')
+                self.assertFalse((root / 'installation.json').exists())
+                self.assertEqual(root.stat().st_mode, before.st_mode)
+
     def test_legacy_existing_install_uses_recorded_root_without_a_fixed_fallback(self):
         from installer.initialize import main
         from unittest.mock import patch
@@ -85,11 +130,18 @@ class Initialization(unittest.TestCase):
     def test_accepts_only_the_expected_empty_docker_created_bind_skeleton(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            inputs = {'.env': b'DEPLOY_ROOT=/srv/test/deployer\n', 'compose.yaml': b'services: {}\n'}
+            for name, content in inputs.items():
+                (root / name).write_bytes(content)
+                os.chown(root / name, 1026, 100)
             for name in ('config/service-keys/approval-service', 'state/approval', 'runtime/approval', 'apps/config'):
                 (root / name).mkdir(parents=True, mode=0o755)
             initialize(root, '/srv/test/deployer')
             self.assertEqual((root / 'state/approval').stat().st_uid, 10004)
             self.assertEqual((root / 'config/service-keys/approval-service/key').stat().st_mode & 0o777, 0o640)
+            for name, content in inputs.items():
+                self.assertEqual((root / name).read_bytes(), content)
+                self.assertEqual((root / name).stat().st_uid, 1026)
 
     def test_repeated_start_preserves_keys_modified_policy_identity_and_media(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -154,12 +206,12 @@ class FirstEnrollment(unittest.TestCase):
                 db.execute('INSERT INTO credentials VALUES (?,?,?,?,?)', (b'credential', 'owner', b'data', 0, 1))
             self.assertIsNone(first_code(store))
 
-    def test_bundle_contains_only_compose_and_instructions_in_one_folder(self):
+    def test_bundle_keeps_instructions_outside_installation_root(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'installer.zip'
             build(output)
             with zipfile.ZipFile(output) as archive:
-                self.assertEqual(set(archive.namelist()), {'compose-deployer/compose.yaml', 'compose-deployer/README.md'})
+                self.assertEqual(set(archive.namelist()), {'compose-deployer/compose.yaml', 'README.md'})
 
 
 if __name__ == '__main__':

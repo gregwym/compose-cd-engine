@@ -40,6 +40,43 @@ def message(op, payload=None, project='test'):
 
 
 class DeclarationBoundary(unittest.TestCase):
+    def test_compiled_user_matches_storage_owner_for_every_mount_kind(self):
+        for shared in (False, True):
+            for read_only in (False, True):
+                with self.subTest(shared=shared, read_only=read_only):
+                    cfg, item = policy(), spec()
+                    cfg['storage']['config'].update(uid=12345, gid=23456, shared=shared)
+                    item['services']['app']['mounts'][0].update(
+                        slot='shared' if shared else 'app', read_only=read_only)
+                    compose, _ = schema.compile_project('test', item, schema.policy(cfg))
+                    app = compose['services']['app']
+                    self.assertEqual(app['user'], '12345:23456')
+                    self.assertEqual(app['cap_drop'], ['ALL'])
+                    self.assertEqual(app['security_opt'], ['no-new-privileges:true'])
+
+    def test_multiple_mounts_require_identical_uid_and_gid(self):
+        item = spec()
+        item['services']['app']['mounts'].append(
+            {'storage': 'downloads', 'slot': 'shared', 'target': '/downloads', 'read_only': True})
+        compose, _ = schema.compile_project('test', item, policy())
+        self.assertEqual(compose['services']['app']['user'], '10001:10001')
+        for field in ('uid', 'gid'):
+            cfg = policy()
+            cfg['storage']['downloads'][field] += 1
+            with self.subTest(field=field), self.assertRaises(schema.PolicyViolation):
+                schema.compile_project('test', item, cfg)
+
+    def test_mountless_services_keep_image_user_and_service_users_are_independent(self):
+        cfg, item = policy(), spec()
+        cfg['storage']['downloads'].update(uid=20002, gid=30003)
+        item['services']['reader'] = {'image': IMAGE, 'memory_mb': 64, 'cpus': 1,
+            'mounts': [{'storage': 'downloads', 'slot': 'shared', 'target': '/downloads', 'read_only': True}]}
+        item['services']['stateless'] = {'image': IMAGE, 'memory_mb': 64, 'cpus': 1}
+        compose, _ = schema.compile_project('test', item, schema.policy(cfg))
+        self.assertEqual(compose['services']['app']['user'], '10001:10001')
+        self.assertEqual(compose['services']['reader']['user'], '20002:30003')
+        self.assertNotIn('user', compose['services']['stateless'])
+
     def test_generated_compose_and_preview_never_return_secret_or_host_paths(self):
         compose, budget = schema.compile_project('test', spec(), schema.policy(policy()))
         app = compose['services']['app']
@@ -53,7 +90,7 @@ class DeclarationBoundary(unittest.TestCase):
     def test_all_unrecognized_compose_capabilities_rejected(self):
         for key in ('privileged', 'build', 'provider', 'include', 'extends', 'env_file', 'label_file',
                     'command', 'entrypoint', 'network_mode', 'pid', 'devices', 'cap_add', 'volumes',
-                    'post_start', 'pre_stop', 'use_api_socket', 'secrets', 'container_name'):
+                    'post_start', 'pre_stop', 'use_api_socket', 'secrets', 'container_name', 'user'):
             item = spec()
             item['services']['app'][key] = 'attacker'
             with self.subTest(key=key), self.assertRaises(ValueError):

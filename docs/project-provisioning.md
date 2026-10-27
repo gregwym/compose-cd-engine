@@ -62,6 +62,13 @@ media deletion, `down`, prune, volume removal or project deletion API is added.
    `slot: shared`, and creates/chowns nothing. Use shared downloads only if all
    approved projects may access them; app config should be unshared. No arbitrary
    caller subpaths or raw host paths are accepted.
+   Services with mounts run explicitly as the storage policy's `uid:gid`, with
+   all capabilities still dropped. Every alias mounted by one service (including
+   shared/read-only aliases) must specify the same UID/GID or planning is rejected.
+   Mountless services retain the image's default user. Approve images whose
+   entrypoint supports the assigned nonroot identity; root-only initialization
+   is not enabled by this compiler. Existing deployments need a new plan/apply
+   to receive this setting; no data is recursively reowned or migrated.
 5. Merge `compose.provisioning.yml` after the base and management files, with a
    private overlay mounting workspace and approved storage roots writable at the
    same absolute paths in Runner. Only Runner gets those mounts. Mount policy at

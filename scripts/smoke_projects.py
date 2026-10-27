@@ -23,13 +23,15 @@ def main():
     docker = [runner.DOCKER, '--host', 'unix:///var/run/docker.sock']
     # Prepare a disposable local image with a useful default command. Production
     # never accepts image creation, commands or commits through this API.
-    check = ['python3', '-c', "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8080',timeout=2).status == 200"]
+    check = ['python3', '-c', "import os, pathlib, urllib.request; assert (os.getuid(), os.getgid()) == (10001, 10001); p = pathlib.Path('/appdata/probe'); p.write_text('writable'); assert p.read_text() == 'writable'; assert urllib.request.urlopen('http://127.0.0.1:8080',timeout=2).status == 200"]
     label = 'project-smoke:' + nonce
     builder = 'builder-' + nonce
     subprocess.run(docker + ['create', '--name', builder, 'compose-cd-engine:test'],
                    stdout=subprocess.DEVNULL, check=True)
     try:
-        subprocess.run(docker + ['commit', '--change',
+        # Deliberately root-default: the compiler, not the image, must supply
+        # the nonroot identity that can access the provisioned 0750 slot.
+        subprocess.run(docker + ['commit', '--change', 'USER 0:0', '--change',
             'CMD ["python3", "-m", "http.server", "8080", "--bind", "0.0.0.0"]', builder, label],
             stdout=subprocess.DEVNULL, check=True)
     finally:

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import secrets
 import stat
 
@@ -74,6 +75,9 @@ def deployment_root(value):
     for prefix in ('/etc', '/proc', '/sys', '/dev', '/run', '/var/run', '/var/lib/docker', '/usr', '/bin', '/sbin', '/lib', '/root'):
         if value == prefix or value.startswith(prefix + '/'):
             raise ValueError('DEPLOY_ROOT cannot be a host system/control directory')
+    if re.fullmatch(r'volume[0-9]+', path.parts[1]) and (
+            len(path.parts) == 2 or path.parts[2].startswith('@')):
+        raise ValueError('DEPLOY_ROOT cannot be a Synology volume root or system directory')
     return value
 
 
@@ -92,17 +96,20 @@ def initialize(root, host_root):
     else:
         # Compose creates bind directories before starting dependencies. Accept
         # only its empty, root-owned directory skeleton, never old data/links.
-        for name in ('config', 'state', 'runtime', 'apps'):
-            path = root / name
-            if not path.exists() and not path.is_symlink():
+        pending = list(root.iterdir())
+        while pending:
+            item = pending.pop()
+            info = item.lstat()
+            relative = str(item.relative_to(root))
+            if relative in ('.env', 'compose.yaml') and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
                 continue
-            for item in [path, *path.rglob('*')]:
-                info = item.lstat()
-                relative = str(item.relative_to(root))
-                if (relative not in DIRECTORIES or not stat.S_ISDIR(info.st_mode)
-                        or info.st_uid != 0 or info.st_gid != 0
-                        or stat.S_IMODE(info.st_mode) != 0o755):
-                    raise ValueError('existing data or unsafe unmarked directory: ' + relative)
+            if (relative not in DIRECTORIES or not stat.S_ISDIR(info.st_mode)
+                    or info.st_uid != 0 or info.st_gid != 0
+                    or stat.S_IMODE(info.st_mode) != 0o755):
+                raise ValueError('existing data or unsafe unmarked directory: ' + relative)
+            # Descend only into verified skeleton directories, never links or
+            # unrelated app data. Finish preflight before any ownership change.
+            pending.extend(item.iterdir())
         os.chown(root, 0, 0)
         os.chmod(root, 0o755)
         json_file(marker, {'schema': 1, 'host_root': host_root})

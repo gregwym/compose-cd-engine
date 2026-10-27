@@ -218,13 +218,15 @@ def compile_project(project, spec, cfg):
             check(isinstance(val, str) and len(val) <= 4096 and '\x00' not in val)
         # Compose interpolation is disabled by escaping every literal dollar.
         env = {k: v.replace('$', '$$') for k, v in environment.items()}
-        mounts, targets = [], set()
+        mounts, targets, identities = [], set(), set()
         check(isinstance(value.get('mounts', []), list) and len(value.get('mounts', [])) <= 16)
         for mount in value.get('mounts', []):
             fields(mount, {'storage', 'slot', 'target', 'read_only'})
             check(type(mount['read_only']) is bool)
             allowed(mount['storage'] in cfg['storage'])
             store = cfg['storage'][mount['storage']]
+            identities.add((store['uid'], store['gid']))
+            allowed(len(identities) == 1)
             name(mount['slot'])
             target = PurePosixPath(mount['target'])
             check(isinstance(mount['target'], str) and re.fullmatch('/[A-Za-z0-9_./-]+', mount['target'])
@@ -261,6 +263,10 @@ def compile_project(project, spec, cfg):
             'logging': {'driver': 'json-file', 'options': {'max-size': '10m', 'max-file': '2'}},
             'healthcheck': {'test': ['CMD', *[x.replace('$', '$$') for x in approved['healthcheck']]], 'interval': '10s',
                             'timeout': '5s', 'retries': 3, 'start_period': '20s'}}
+        if identities:
+            # Match slot ownership without restoring DAC override capabilities.
+            uid, gid = next(iter(identities))
+            services[service]['user'] = f'{uid}:{gid}'
     resources(memory <= cfg['max_memory_mb'] and cpus <= cfg['max_cpus'])
     return {'services': services, 'networks': {'default': {'internal': not spec.get('egress', cfg['allow_egress'])}}}, {
         'memory_mb': memory, 'cpus': cpus, 'ports': sorted(used_ports)}
