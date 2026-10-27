@@ -32,6 +32,7 @@ COPY deployer/ deployer/
 COPY authorization/ authorization/
 COPY installer/ installer/
 COPY app_ingress/ app_ingress/
+COPY scripts/agent.py scripts/app_ingress.py scripts/task_delegation.py /app/scripts/
 RUN chmod -R a+rX /app
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/compose-cd-engine/
 COPY third_party/ /usr/share/doc/compose-cd-engine/third_party/

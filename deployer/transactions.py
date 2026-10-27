@@ -2,6 +2,7 @@
 import json
 import re
 import subprocess
+import sqlite3
 import time
 import uuid
 from pathlib import PurePosixPath
@@ -25,6 +26,20 @@ class Broker:
                 CREATE TABLE IF NOT EXISTS adopted_projects(project TEXT PRIMARY KEY, agent TEXT,
                     baseline TEXT, recovery INTEGER, task TEXT);
             ''')
+            db.executescript('''
+                CREATE TRIGGER IF NOT EXISTS adoption_plan_immutable_delete BEFORE DELETE ON adoption_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS adoption_plan_immutable_update BEFORE UPDATE ON adoption_plans
+                  WHEN NEW.id IS NOT OLD.id OR NEW.project IS NOT OLD.project OR NEW.agent IS NOT OLD.agent
+                    OR NEW.created IS NOT OLD.created OR NEW.policy IS NOT OLD.policy OR NEW.registration IS NOT OLD.registration
+                    OR NEW.action IS NOT OLD.action OR NEW.scope IS NOT OLD.scope
+                  BEGIN SELECT RAISE(ABORT,'immutable'); END;
+                CREATE TABLE IF NOT EXISTS delegated_plans(plan TEXT PRIMARY KEY, delegation TEXT);
+                CREATE TRIGGER IF NOT EXISTS delegated_plan_no_update BEFORE UPDATE ON delegated_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS delegated_plan_no_delete BEFORE DELETE ON delegated_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;
+                CREATE TABLE IF NOT EXISTS adoption_baselines(task TEXT PRIMARY KEY, project TEXT, registration TEXT, baseline TEXT);
+                CREATE TRIGGER IF NOT EXISTS baseline_no_update BEFORE UPDATE ON adoption_baselines BEGIN SELECT RAISE(ABORT,'immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS baseline_no_delete BEFORE DELETE ON adoption_baselines BEGIN SELECT RAISE(ABORT,'immutable'); END;
+            ''')
             for project, agent, task in db.execute("SELECT project,agent,id FROM adoption_tasks WHERE state='running'").fetchall():
                 db.execute('INSERT OR REPLACE INTO adopted_projects VALUES (?,?,?,1,?)', (project, agent, '', task))
             db.execute("UPDATE adoption_tasks SET state='outcome_unknown',category='interrupted' WHERE state='running'")
@@ -36,6 +51,8 @@ class Broker:
         entry=targets[project]
         protected=[cfg['workspace'],cfg['adoption']['registry'],cfg['authorization']['service_key'],
                    str(self.s.policy_path),str(self.s.runner.STATE_DIR)]
+        if 'task_delegation' in cfg:
+            protected.append(cfg['task_delegation']['registry'])
         for service in entry['compose']['services'].values():
             for mount in service['volumes']:
                 source=PurePosixPath(mount['source'])
@@ -58,9 +75,38 @@ class Broker:
                 'configuration_notice': 'Administrator-reviewed configuration may differ from running runtime; exact declaration hash binds all private values.',
                 'mode': 'single immutable transaction'}
 
+    @staticmethod
+    def semantics(baseline):
+        return sorted([{k:v for k,v in row.items() if k not in
+                        ('container_id','state','working_dir','config_files','image')}
+                       for row in baseline['containers']], key=schema.canonical)
+
     def verify(self, project, entry):
         actual = inspect_project(self.s.docker, project)
-        require(actual['baseline_hash'] == entry['baseline']['baseline_hash'], 'baseline_drift')
+        expected = entry['baseline']['baseline_hash']
+        with sqlite3.connect(self.s.db_path) as db:
+            row = db.execute('SELECT b.baseline FROM adoption_baselines b JOIN adopted_projects a ON a.project=b.project WHERE a.project=? AND a.recovery=0 AND b.registration=? ORDER BY b.rowid DESC LIMIT 1',
+                             (project,schema.fingerprint(entry))).fetchone()
+            if row:
+                expected = json.loads(row[0])['baseline_hash']
+        require(actual['baseline_hash'] == expected, 'baseline_drift')
+
+    def inspect_access(self, cfg, project, agent, delegation):
+        from authorization.delegation import registered, scope
+        entry = self.target(cfg, project)
+        wanted = scope(project, entry, registered(cfg,project,agent,entry))
+        token = uuid.uuid4().hex
+        rpc.call(cfg['authorization'], 'delegation_authorize', {'delegation_id':delegation,
+            'agent':agent,'project':project,'kind':'inspect','policy':schema.fingerprint(cfg),
+            'scope':wanted,'plan':token,'task':token,'envelope':wanted['envelope']})
+
+    def authorize(self, cfg, auth, delegation):
+        if delegation:
+            from authorization.delegation import registered
+            env = registered(cfg, auth['project'], auth['agent'], self.target(cfg,auth['project']))
+            return rpc.call(cfg['authorization'], 'delegation_authorize',
+                            {**auth,'delegation_id':delegation,'kind':'adoption','envelope':env})
+        return rpc.call(cfg['authorization'], 'transaction_authorize', auth)
 
     def record(self, db, agent, task, project, state):
         db.execute('INSERT INTO audit_outbox(value) VALUES (?)', (schema.canonical(
@@ -68,6 +114,20 @@ class Broker:
 
     def dispatch(self, cfg, project, agent, op, payload):
         require(agent is not None and 'authorization' in cfg)
+        if op == 'delegation_request':
+            from authorization.delegation import registered, scope
+            with self.s.lock():
+                cfg = self.s.policy(require_enabled=False)
+                entry = self.target(cfg,project)
+                env = registered(cfg,project,agent,entry)
+                require(payload['lifetime'] <= env['max_lifetime'])
+                require({'adoption_plan','adoption_apply','adoption_task'} <= set(cfg['operations']), 'forbidden_by_policy')
+                self.verify(project,entry)
+                wanted = scope(project,entry,env)
+                return rpc.call(cfg['authorization'],'propose', {'agent':agent,'project':project,
+                    'plan':uuid.uuid4().hex,'policy':schema.fingerprint(cfg),'scope':wanted,
+                    'spec_hash':schema.fingerprint(wanted),'mode':'expiring',
+                    'lifetime':payload['lifetime'],'sandbox':False})
         if op == 'adoption_task':
             with self.s.db() as db:
                 row = db.execute('SELECT state,category,plan FROM adoption_tasks WHERE id=? AND project=? AND agent=?',
@@ -98,7 +158,12 @@ class Broker:
                     wanted = self.wanted(project,payload['action'],entry)
                     db.execute('INSERT INTO adoption_plans VALUES (?,?,?,?,?,?,?,?,NULL)',
                                (pid,project,agent,int(time.time()),ph,rh,payload['action'],schema.canonical(wanted)))
-                    return {'status':'needs_approval','plan_id':pid,'scope':wanted,'expires_in':3600}
+                    delegation = payload.get('delegation_id')
+                    if delegation:
+                        self.authorize(cfg, {'agent':agent,'project':project,'plan':pid,'policy':ph,
+                            'scope':wanted,'task':uuid.uuid5(uuid.NAMESPACE_URL,'delegated-plan:'+pid).hex}, delegation)
+                        db.execute('INSERT INTO delegated_plans VALUES (?,?)',(pid,delegation))
+                    return {'status':'authorized' if delegation else 'needs_approval','plan_id':pid,'scope':wanted,'expires_in':3600}
                 row = db.execute('SELECT created,policy,registration,action,scope,task FROM adoption_plans WHERE id=? AND project=? AND agent=?',
                                  (payload['plan_id'],project,agent)).fetchone()
                 require(row is not None)
@@ -106,6 +171,11 @@ class Broker:
                     return {'status':'accepted','task_id':row[5]}
                 require(row[0]+3600>time.time() and row[1]==ph and row[2]==rh,'stale_request')
                 auth = {'agent':agent,'project':project,'plan':payload['plan_id'],'policy':ph,'scope':json.loads(row[4])}
+                delegated = db.execute('SELECT delegation FROM delegated_plans WHERE plan=?',(payload['plan_id'],)).fetchone()
+                delegation = delegated[0] if delegated else None
+                require(payload.get('delegation_id') == delegation)
+                if op == 'adoption_request' and delegation:
+                    require(False, 'use_delegated_apply')
                 if op == 'adoption_request':
                     return rpc.call(cfg['authorization'],'propose',{**auth,'spec_hash':rh,
                                     'mode':'once','lifetime':3600,'sandbox':False})
@@ -113,7 +183,7 @@ class Broker:
                 require(not db.execute("SELECT 1 FROM adoption_tasks WHERE project=? AND state IN ('queued','running')", (project,)).fetchone(),'busy')
                 self.verify(project,entry)
                 task = uuid.uuid5(uuid.NAMESPACE_URL, 'compose-cd-adoption:'+project+':'+agent+':'+payload['plan_id']).hex
-                rpc.call(cfg['authorization'],'transaction_authorize',{**auth,'task':task})
+                self.authorize(cfg,{**auth,'task':task},delegation)
                 db.execute('INSERT INTO adoption_tasks VALUES (?,?,?,?,?,?,?)',
                            (task,payload['plan_id'],project,agent,'queued','none',int(time.time())))
                 db.execute('UPDATE adoption_plans SET task=? WHERE id=?',(task,payload['plan_id']))
@@ -141,7 +211,10 @@ class Broker:
                     require(not current or not current[0],'recovery_required')
                 self.verify(project,entry)
                 auth={'agent':agent,'project':project,'plan':pid,'policy':ph,'scope':json.loads(wanted),'task':task}
-                rpc.call(cfg['authorization'],'transaction_authorize',auth)
+                with self.s.db() as db:
+                    delegated = db.execute('SELECT delegation FROM delegated_plans WHERE plan=?',(pid,)).fetchone()
+                delegation = delegated[0] if delegated else None
+                self.authorize(cfg,auth,delegation)
                 if action=='redeploy':
                     require(entry['allow_redeploy'])
                     argv,env=self.prepare(task,project,entry)
@@ -150,7 +223,7 @@ class Broker:
                     require(schema.fingerprint(fresh)==ph,'policy_drift')
                     require(schema.fingerprint(self.target(fresh,project))==rh,'registration_drift')
                     self.verify(project,entry)
-                    rpc.call(cfg['authorization'],'transaction_authorize',auth)
+                    self.authorize(cfg,auth,delegation)
                     with self.s.db() as db:
                         db.execute('INSERT OR REPLACE INTO adopted_projects VALUES (?,?,?,1,?)',
                                    (project,agent,entry['baseline']['baseline_hash'],task))
@@ -160,6 +233,12 @@ class Broker:
                         env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                         timeout=entry['health_timeout']+120,check=True)
                     self.health(project,entry)
+                    if delegation:
+                        actual = inspect_project(self.s.docker,project)
+                        require(self.semantics(actual) == self.semantics(entry['baseline']), 'semantic_drift')
+                        with self.s.db() as db:
+                            db.execute('INSERT INTO adoption_baselines VALUES (?,?,?,?)',
+                                       (task,project,rh,schema.canonical(actual)))
                 with self.s.db() as db:
                     db.execute('INSERT OR REPLACE INTO adopted_projects VALUES (?,?,?,0,?)',
                                (project,agent,entry['baseline']['baseline_hash'],task))

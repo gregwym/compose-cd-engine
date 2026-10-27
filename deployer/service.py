@@ -117,7 +117,7 @@ class Service:
         reserve_nonce(value, str(self.root / 'nonces.sqlite'))
         project, op, payload = value['project'], value['operation'], value['payload']
         from deployer.transactions import OPS as ADOPTION_OPS
-        adoption = op in ADOPTION_OPS
+        adoption = op in ADOPTION_OPS or op == 'delegation_request'
         inventory = op in ('inventory', 'inventory_request', 'inspect', 'inspect_request')
         cfg = self.policy(require_enabled=op not in ('status', 'task', 'stop', 'grant_status', 'grants', 'projects') and not inventory and not adoption)
         require('authorization' not in cfg or agent in cfg['authorization']['agents'] or paired, 'v2_required')
@@ -137,7 +137,10 @@ class Service:
                 inspection_scope(project)
                 if op == 'inspect_request':
                     return rpc.call(cfg['authorization'], 'inspect_request', {'agent': agent, 'project': project, **payload})
-                rpc.call(cfg['authorization'], 'inspect_access', {'agent': agent, 'project': project})
+                if 'delegation_id' in payload:
+                    self.adoption.inspect_access(cfg, project, agent, payload['delegation_id'])
+                else:
+                    rpc.call(cfg['authorization'], 'inspect_access', {'agent': agent, 'project': project})
                 return inspect_project(self.docker, project)
             require(project == INVENTORY_PROJECT)
             if op == 'inventory_request':
@@ -146,6 +149,10 @@ class Service:
             from deployer.inventory import collect
             return collect(self.docker)
         if agent:
+            # Principal/project-bound authorization metadata is not provisioning.
+            # It must remain available to renew/revoke task access after adoption.
+            if op in ('grant_status', 'grants'):
+                return self.authorization_operation(db=None, cfg=cfg, agent=agent, project=project, op=op, payload=payload)
             with self.db() as db:
                 require(not db.execute('SELECT 1 FROM adopted_projects WHERE project=?', (project,)).fetchone(), 'use_adoption_api')
                 owner = db.execute('SELECT agent FROM project_auth WHERE id=?', (project,)).fetchone()

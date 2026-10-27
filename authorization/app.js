@@ -43,6 +43,17 @@ function disclosure(parent, title) {
   const node = document.createElement('details'); text(node, 'summary', title); parent.append(node); return node;
 }
 function permissions(parent, scope) {
+  if (scope.type === 'registered_task_v1') {
+    text(parent, 'p', 'BOUNDED TASK DELEGATION: ' + scope.project, 'sensitive');
+    text(parent, 'p', 'One expiring approval permits repeated supported subplans, until expiry or revocation. Redeploy can interrupt service.');
+    text(parent, 'p', scope.diagnostics);
+    text(parent, 'p', 'Allowed: ' + scope.operations.join(', '));
+    text(parent, 'p', 'Excluded: ' + scope.exclusions.join('; '), 'sensitive');
+    text(parent, 'p', 'Administrator envelope (exact backend/route/policy/registration): ' + JSON.stringify(scope.envelope));
+    text(parent, 'p', 'Exact resource identities: ' + JSON.stringify(scope.identities));
+    permissions(parent, scope.adoption);
+    return;
+  }
   if ((scope.operations || []).includes('shared_ingress_apply')) {
     text(parent, 'p', 'SHARED APPLICATION INGRESS: ' + scope.backend, 'sensitive');
     const route = scope.route || {};
@@ -84,6 +95,19 @@ function permissions(parent, scope) {
     for (const port of service.ports || []) text(parent, 'p', `Inbound: ${port.published}/${port.protocol} → application port ${port.target}`);
     if (service.ports && !service.ports.length) text(parent, 'p', 'Inbound: no published ports.');
   }
+}
+function requestedPermissions(parent, request) {
+  if (request.scope.type === 'registered_task_v1') {
+    text(parent, 'h4', 'Full task authorization');
+    permissions(parent, request.scope);
+    text(parent, 'h4', 'New or expanded permissions (difference only)');
+    text(parent, 'pre', JSON.stringify(request.grant_diff, null, 2));
+    return;
+  }
+  text(parent, 'h4', 'New or expanded permissions');
+  if (Object.keys(request.grant_diff).length) permissions(parent, request.grant_diff);
+  else text(parent, 'p', 'No expansion compared with an active authorization.');
+  const complete = disclosure(parent, 'Full requested authorization'); permissions(complete, request.scope);
 }
 async function refresh() {
   const session = await api('session'); csrf = session.csrf;
@@ -131,10 +155,7 @@ async function refresh() {
     const previous = disclosure(box, 'Existing permissions');
     if (!existing.length) text(previous, 'p', 'No active project authorization.');
     for (const grant of existing) permissions(previous, grant.scope);
-    text(box, 'h4', 'New or expanded permissions');
-    if (Object.keys(request.grant_diff).length) permissions(box, request.grant_diff);
-    else text(box, 'p', 'No expansion compared with an active authorization.');
-    const complete = disclosure(box, 'Full requested authorization'); permissions(complete, request.scope);
+    requestedPermissions(box, request);
     text(disclosure(box, 'Request verification details'), 'pre', `Plan: ${request.plan_id}\nSpecification: ${request.spec_hash}\nPolicy: ${request.policy}`);
     if (request.status === 'pending') {
       button(box, 'Approve these permissions with Passkey', async () => { await ceremony('approve', request.request_id); await refresh(); });

@@ -9,7 +9,7 @@ from authorization.scope import require
 from management.protocol import protected_file
 
 
-def load(filename):
+def load_document(filename):
     file = protected_file(filename)
     fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -21,6 +21,11 @@ def load(filename):
         value = json.loads(raw)
     finally:
         os.close(fd)
+    return value
+
+
+def load(filename):
+    value = load_document(filename)
     schema.fields(value, {'version', 'targets'})
     require(value['version'] == 1 and isinstance(value['targets'], dict) and len(value['targets']) <= 32)
     for project, entry in value['targets'].items():

@@ -69,6 +69,70 @@ current inventory permissions do not change during upgrade. No owner credentials
 are transferred to the agent. Empty legacy agents dictionaries are now accepted
 for Ed25519-only use; the existing policy structure still requires the dictionary.
 
+## Automatically continue the approved structure read (client polling)
+
+For a **new** inspection request, use a private, agent-owned mode-0700 directory
+and keep the PEM, state, lock and returned structure outside the repository:
+
+    python3 -m scripts.agent inspect_request existing-app --mode once --lifetime 600 --endpoint https://MANAGEMENT_HOST:8443 --secret-file /PRIVATE_DIRECTORY/agent.pem --state /PRIVATE_DIRECTORY/inspect.json --follow --timeout 3600
+
+The CLI emits the approval URL once. Route it privately to the requesting owner.
+It polls signed `grant_status` every five seconds; it is **not** an approval
+callback, webhook, browser watcher, or notification subscription. Only a matching
+`approved` response permits one `inspect` call. Pairing/login alone is insufficient.
+The server still checks current authority before reading; the request's approved
+status does not guarantee its grant has not since expired, been consumed or revoked.
+The protocol's inspect operation selects a currently matching project/scope grant,
+not a caller-selected grant ID. No management/adoption operations run here.
+
+Repeat the same command and `--state` after a process restart. Stored endpoint,
+agent, project, request/plan IDs, policy/scope hash, mode and lifetime remain bound;
+new command-line mode/lifetime values do not replace a stored request. This path
+cannot attach an existing stateless request with `--id`. Do not create a replacement
+request merely to recover a lost response or expired authority. Renewal, broader
+scope and any adoption transaction require a separate explicit owner decision.
+Without `--state`/`--follow`, the original single-call CLI behavior is unchanged;
+`--follow` requires `--state`. With `--state` but no `--follow`, each invocation
+makes one workflow step (which can finish the approved read).
+
+Durable request/read intent is fsynced **before** sending either consuming call.
+Once authority is consumed before Docker inspection, so response loss, an
+interrupted intent, or uncertain local persistence stops as `outcome_unknown`.
+It never blindly repeats inspect, even for persistent grants. There is no
+exactly-once result-recovery API. A crash after structure storage but before state
+commit may leave a private orphan structure file; reconcile it manually rather
+than deleting intent and replaying. State and sidecar locks prevent concurrent
+users of the same state from issuing duplicate reads. Do not delete/copy/edit state
+or the stable lock file to bypass this protection; distinct state files cannot
+coordinate consumption of shared grants.
+
+Full approved structure is atomically stored as mode 0600 in
+`<state>.structure.json`, never printed. Successful JSON events contain only
+container/mount/port/network counts, the baseline SHA-256 hash, and local storage
+path. State contains identifiers/hashes, not host structure or credentials.
+Keep the directory private (including backups); do not upload structure or dump
+it into chat/logs. A completed resume verifies the stored structure hash and makes
+no network call. All sidecar files are client-owned and require private permissions.
+
+Exit 0 means the structure was stored/verified. Exit 1 means a terminal denial,
+expiry, revocation, unpaired/HTTP access denial, invalid binding, rejected request,
+or ambiguous outcome; no new approval is requested. Exit 75 means still pending,
+local polling timeout, three consecutive transient polling failures, or server
+backoff (`retry_later`). A timeout emits `timeout` and stops polling; the same
+pending state can be explicitly resumed. A 429 or Retry-After response stops this
+invocation without an automatic retry; the owner must honor server backoff before
+resuming. Other transient status-read failures are bounded to three consecutive
+attempts. HTTP calls retain the existing 15-second socket timeout; a CLI deadline
+is a polling deadline, not a hard cancellation of an in-flight request/read.
+
+**Completion ownership:** automatic continuation requires this process to remain
+running, or an explicitly owned resumable execution/watch path. The calling agent
+must retain the task and collect its exit/event result, then privately report the
+sanitized summary or concrete blocker. Launching a detached command and saying
+“waiting” is not a completion path; approval alone does not restart a stopped CLI.
+No NAS contact or acceptance is implied by the offline mocked client tests:
+`python3 -m unittest discover -s tests -p 'test_agent*workflow.py' -v`.
+
 ## Offline preview helpers (not apply APIs)
 
 adoption_preview validates the observation hash and rejects ambiguous Compose

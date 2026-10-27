@@ -15,6 +15,9 @@ class Store(PairingStore):
         self.path, self.origin = str(path), origin
         with self.db() as db:
             db.executescript('''
+                CREATE TABLE IF NOT EXISTS delegation_receipts(task TEXT PRIMARY KEY, grant_id TEXT, binding TEXT);
+                CREATE TRIGGER IF NOT EXISTS delegation_no_update BEFORE UPDATE ON delegation_receipts BEGIN SELECT RAISE(ABORT,'immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS delegation_no_delete BEFORE DELETE ON delegation_receipts BEGIN SELECT RAISE(ABORT,'immutable'); END;
                 CREATE TABLE IF NOT EXISTS transaction_grants(task TEXT PRIMARY KEY, grant_id TEXT UNIQUE, binding TEXT);
                 CREATE TABLE IF NOT EXISTS principals(id TEXT PRIMARY KEY, kind TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS credentials(id BLOB PRIMARY KEY, admin TEXT, data BLOB, counter INTEGER, active INTEGER);
@@ -94,6 +97,12 @@ class Store(PairingStore):
         schema.name(value['project']); schema.name(value['agent'])
         require(value['mode'] in ('once', 'persistent', 'expiring'))
         require(type(value['lifetime']) is int and 60 <= value['lifetime'] <= 31536000)
+        if value['scope'].get('type') == 'registered_task_v1':
+            from authorization.delegation import envelope
+            env = envelope(value['scope']['envelope'])
+            require(value['mode'] == 'expiring' and not value['sandbox']
+                    and value['lifetime'] <= env['max_lifetime']
+                    and env['agent'] == value['agent'] and value['scope']['project'] == value['project'])
         now = int(time.time())
         with self.db() as db:
             self.require_active_agent(db, value['agent'])
@@ -135,6 +144,9 @@ class Store(PairingStore):
         self.event(db, admin, 'grant_issued', gid, {'request': rid, 'credential': credential.hex() if credential else None})
 
     def rpc(self, op, value):
+        if op == 'delegation_authorize':
+            from authorization.delegation import authorize
+            return authorize(self, value)
         # Service-key API cannot issue/modify grants or register credentials.
         if op == 'paired':
             schema.fields(value, {'agent', 'public_key', 'audience'})
@@ -208,7 +220,29 @@ class Store(PairingStore):
             if op == 'request':
                 row = db.execute('SELECT * FROM requests WHERE id=? AND agent=? AND project=?',
                                  (value['request_id'], value['agent'], value['project'])).fetchone()
-                return self.public_request(row)
+                result = self.public_request(row)
+                if result['scope'].get('type') == 'registered_task_v1':
+                    # Task-only additive result; approval alone is not live authority.
+                    self.require_active_agent(db, row['agent'])
+                    if row['status'] == 'approved':
+                        grant = db.execute('SELECT * FROM grants WHERE request=?', (row['id'],)).fetchone()
+                        require(grant is not None)
+                        for key in ('agent', 'project', 'plan', 'policy', 'scope', 'mode'):
+                            require(grant[key] == row[key], 'stale_request')
+                        if grant['status'] != 'active':
+                            result['status'] = grant['status']
+                        elif grant['revoked'] is not None:
+                            result['status'] = 'revoked'
+                        elif grant['mode'] != 'expiring' or grant['expires'] <= time.time():
+                            result['status'] = 'expired'
+                        elif not grant['credential'] or not db.execute(
+                                'SELECT 1 FROM credentials WHERE id=? AND active=1',
+                                (grant['credential'],)).fetchone():
+                            result['status'] = 'not_authorized'
+                        else:
+                            require(grant['expires'] == grant['created'] + row['lifetime'], 'stale_request')
+                            result['delegation_id'] = grant['id']
+                return result
             if op == 'grants':
                 return {'grants': [{'grant_id': r['id'], 'project': r['project'], 'scope': json.loads(r['scope']),
                                     'expires': r['expires'], 'revision': r['revision']} for r in self.grants(db, value['agent'], value['project'])]}

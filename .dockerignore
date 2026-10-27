@@ -30,3 +30,7 @@
 !installer/*.json
 !app_ingress/
 !app_ingress/*.py
+!scripts/
+!scripts/agent.py
+!scripts/app_ingress.py
+!scripts/task_delegation.py

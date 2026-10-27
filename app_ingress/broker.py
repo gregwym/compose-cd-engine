@@ -64,7 +64,12 @@ class Broker:
         cfg = validate(self.config()) if cfg is None else cfg
         require(cfg['enabled'], 'ingress_disabled')
         require(operation in ('plan','request','apply','receipt','recovery_plan'))
-        schema.fields(payload, {'backend'} if operation == 'plan' else {'plan_id'})
+        schema.fields(payload, {'backend'} if operation == 'plan' else {'plan_id'},
+                      {'delegation_id','project'} if operation in ('plan','apply') else ())
+        require(('delegation_id' in payload) == ('project' in payload))
+        if 'delegation_id' in payload:
+            require(isinstance(payload['delegation_id'],str) and schema.HEX.fullmatch(payload['delegation_id']))
+            schema.name(payload['project'])
         policy = schema.fingerprint(cfg)
         with self.db() as db:
             if operation == 'plan':
@@ -79,6 +84,9 @@ class Broker:
                 document = {'baseline':baseline, 'candidate':built['candidate'], 'baseline_hash':built['baseline_hash'],
                             'candidate_hash':built['candidate_hash'], 'backend_hash':schema.fingerprint(entry), 'recovery_of':None,
                             'route':{'hostname':cfg['hostname'],'https_port':entry['https_port'],'root_path':'/'}}
+                if 'delegation_id' in payload:
+                    document['delegation_id'] = payload['delegation_id']
+                    document['project'] = payload['project']
                 return self.save(db, agent, backend, policy, document)
             pid = payload['plan_id']
             require(isinstance(pid, str) and schema.HEX.fullmatch(pid))
@@ -105,6 +113,8 @@ class Broker:
             require(created + 3600 > time.time(), 'stale_plan')
             require(not receipt, 'recovery_required')
             require(not self.blocked(db, document['recovery_of']), 'recovery_required')
+            delegation = document.get('delegation_id')
+            require(payload.get('delegation_id') == delegation and payload.get('project') == document.get('project'))
             wanted = self.scope(backend, document)
             auth = {'agent':agent,'project':'shared-app-ingress','plan':pid,'policy':policy,'scope':wanted}
             if operation == 'request':
@@ -112,7 +122,12 @@ class Broker:
             require(operation == 'apply')
             actual, tag = self.transport.snapshot()
             require(actual == document['baseline'], 'ingress_drift')
-            require(self.authorize('ingress_authorize', {**auth,'task':pid}).get('status') == 'authorized')
+            require(schema.fingerprint(validate(self.config())) == policy, 'policy_drift')
+            if delegation:
+                require(self.authorize('delegation_authorize', {**auth,'task':pid,
+                    'project':document['project'],'kind':'ingress','delegation_id':delegation}).get('status') == 'authorized')
+            else:
+                require(self.authorize('ingress_authorize', {**auth,'task':pid}).get('status') == 'authorized')
             self.record(db,pid,'applying',{'baseline_hash':document['baseline_hash'],'candidate_hash':document['candidate_hash']})
         # Intent is durably committed BEFORE attempting the CAS. Server is serial and holds a process lock.
         try:
@@ -141,4 +156,11 @@ class Broker:
     def save(self, db, agent, backend, policy, document):
         pid = uuid.uuid4().hex
         db.execute('INSERT INTO plans VALUES (?,?,?,?,?,?)', (pid,agent,backend,int(time.time()),policy,schema.canonical(document)))
-        return {'plan_id':pid,'status':'needs_approval','scope':self.scope(backend,document),'expires_in':3600}
+        delegated = document.get('delegation_id')
+        if delegated:
+            require(self.authorize('delegation_authorize', {'agent':agent,'project':document['project'],
+                'plan':pid,'task':uuid.uuid5(uuid.NAMESPACE_URL,'ingress-plan:'+pid).hex,
+                'policy':policy,'scope':self.scope(backend,document),'kind':'ingress',
+                'delegation_id':delegated}).get('status') == 'authorized')
+        return {'plan_id':pid,'status':'authorized' if delegated else 'needs_approval',
+                'scope':self.scope(backend,document),'expires_in':3600}

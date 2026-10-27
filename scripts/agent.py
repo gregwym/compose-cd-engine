@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Resumable v2 agent client; emits bounded JSON events for OpenClaw/Telegram."""
 import argparse
+import fcntl
+from contextlib import contextmanager
 import json
 import os
 import ssl
 import sys
 import time
 import urllib.request
+import urllib.error
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -177,6 +180,193 @@ class Workflow:
             time.sleep(min(interval, max(0, deadline - time.monotonic())))
 
 
+class InspectWorkflow:
+    """Single request and at most one read; ambiguous consuming calls are not retried."""
+    save = Workflow.save
+
+    def __init__(self, client, state, mode='once', lifetime=86400, emit=None):
+        from deployer.adoption import inspection_scope, inspection_policy
+        self.client, self.path = client, Path(state).absolute()
+        self.emit = emit or (lambda event: print(schema.canonical(event), flush=True))
+        self.identity = {'endpoint': client.endpoint, 'agent': client.agent, 'project': client.project}
+        schema.check(mode in ('once', 'persistent', 'expiring'))
+        schema.number(lifetime, 60, 31536000)
+        self.scope = inspection_scope(client.project)
+        self.policy = inspection_policy(client.project)
+        st = self.path.parent.lstat()
+        schema.check(self.path.parent.is_dir() and not self.path.parent.is_symlink()
+                     and st.st_uid == os.geteuid() and not st.st_mode & 0o077)
+        self.output = self.path.with_name(self.path.name + '.structure.json')
+        with self.locked():
+            if self.path.exists() or self.path.is_symlink():
+                self.load()
+            else:
+                schema.check(not self.output.exists() and not self.output.is_symlink())
+                self.state = {'workflow': 'inspect-v1', 'identity': self.identity,
+                              'mode': mode, 'lifetime': lifetime, 'phase': 'request'}
+                self.save()
+
+    @contextmanager
+    def locked(self):
+        # Stable sidecar inode serializes constructors, resumptions and reads.
+        path = self.path.with_name(self.path.name + '.lock')
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            import stat
+            st = os.fstat(fd)
+            schema.check(stat.S_ISREG(st.st_mode) and st.st_uid == os.geteuid()
+                         and not st.st_mode & 0o077 and st.st_nlink == 1)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
+        finally:
+            os.close(fd)
+
+    def load(self):
+        self.state = json.loads(private(self.path, 8192))
+        schema.check(self.state['workflow'] == 'inspect-v1' and self.state['identity'] == self.identity)
+        schema.check(self.state['mode'] in ('once', 'persistent', 'expiring'))
+        schema.number(self.state['lifetime'], 60, 31536000)
+
+    def stop(self, status):
+        self.state.update(phase='stopped', result=status)
+        self.save()
+        return {'status': status, 'resume': str(self.path)}
+
+    def binding(self, result, initial=False):
+        schema.check(result['agent'] == self.client.agent and result['project'] == self.client.project
+                     and result['scope'] == self.scope and result['policy'] == self.policy
+                     and result['spec_hash'] == schema.fingerprint(self.scope)
+                     and result['mode'] == self.state['mode'] and result['lifetime'] == self.state['lifetime'])
+        for key in ('request_id', 'plan_id'):
+            schema.check(isinstance(result[key], str) and schema.HEX.fullmatch(result[key]))
+        binding = {key: result[key] for key in ('request_id', 'plan_id', 'policy', 'spec_hash', 'mode', 'lifetime')}
+        if initial:
+            self.state['request'] = binding
+        else:
+            schema.check(binding == self.state['request'])
+
+    def step(self):
+        with self.locked():
+            self.load()
+            try:
+                return self._step()
+            except urllib.error.HTTPError as error:
+                # Never log response bodies (which may contain server details).
+                if error.code in (401, 403):
+                    return self.stop('access_denied_or_unpaired')
+                if error.code not in (408, 429) and error.code < 500:
+                    return self.stop('request_rejected')
+                if self.state['phase'] in ('request_intent', 'inspect_intent'):
+                    return self.stop('outcome_unknown')
+                if error.code == 429 or error.headers.get('Retry-After'):
+                    # Leave scheduling to the owner rather than violating Retry-After.
+                    return {'status': 'retry_later', 'resume': str(self.path)}
+                raise
+            except (ValueError, KeyError, TypeError):
+                if self.state['phase'] in ('request_intent', 'inspect_intent'):
+                    return self.stop('outcome_unknown')
+                return self.stop('invalid_response_or_binding')
+            except OSError:
+                if self.state['phase'] in ('request_intent', 'inspect_intent'):
+                    return self.stop('outcome_unknown')
+                raise
+
+    def _step(self):
+        phase = self.state['phase']
+        if phase == 'stopped':
+            return {'status': self.state['result'], 'resume': str(self.path)}
+        if phase == 'done':
+            result = json.loads(private(self.output, 65536))
+            schema.check(schema.fingerprint(result) == self.state['structure_hash'])
+            return self.summary(result)
+        if phase in ('request_intent', 'inspect_intent'):
+            return self.stop('outcome_unknown')
+        if phase == 'request':
+            self.state['phase'] = 'request_intent'; self.save()
+            result = self.client.call('inspect_request', {'mode': self.state['mode'], 'lifetime': self.state['lifetime']})
+            if result.get('status') not in ('pending', 'approved'):
+                return self.stop(self.terminal(result))
+            self.binding(result, initial=True)
+            approval = urlsplit(result['approval_url'])
+            schema.check(approval.scheme == 'https' and approval.hostname and not approval.username
+                         and not approval.password and not approval.query and not approval.fragment)
+            self.state.update(phase='waiting', approval_url=result['approval_url'])
+            self.save()
+            # Independently poll even an initially approved response before reading.
+            return {'status': 'authorization_required', 'request_id': result['request_id'],
+                    'approval_url': result['approval_url']}
+        schema.check(phase == 'waiting')
+        result = self.client.call('grant_status', {'approval_id': self.state['request']['request_id']})
+        if result.get('status') in ('authorization_unavailable', 'unavailable', 'busy'):
+            raise OSError('status read unavailable')
+        if result.get('status') == 'rate_limited':
+            return {'status': 'retry_later', 'resume': str(self.path)}
+        if result.get('status') not in ('pending', 'approved'):
+            return self.stop(self.terminal(result))
+        self.binding(result)
+        if result['status'] == 'pending':
+            return {'status': 'waiting_for_authorization', 'request_id': self.state['request']['request_id']}
+        if time.monotonic() >= getattr(self, 'deadline', float('inf')):
+            return {'status': 'timeout', 'resume': str(self.path)}
+        # No exactly-once inspect RPC: once authority is consumed BEFORE Docker.
+        self.state['phase'] = 'inspect_intent'; self.save()
+        result = self.client.call('inspect', {})
+        if 'status' in result:
+            return self.stop(self.terminal(result))
+        from deployer.adoption import validate_inspection_baseline
+        validate_inspection_baseline(result)
+        schema.check(result['project'] == self.client.project and result['read_only'] is True
+                     and result['managed_access_granted'] is False and result['adoption_ready'] is False)
+        schema.check(not self.output.exists() and not self.output.is_symlink())
+        # Private atomic fsync writer; structure never enters state or emitted events.
+        writer = object.__new__(Workflow)
+        writer.path, writer.state = self.output, result
+        writer.save()
+        self.state.update(phase='done', structure_hash=schema.fingerprint(result))
+        self.save()
+        return self.summary(result)
+
+    @staticmethod
+    def terminal(result):
+        status = result.get('status')
+        return status if status in ('denied', 'expired', 'revoked', 'unpaired', 'consumed',
+                                     'unauthorized', 'not_authorized', 'forbidden', 'inspection_timeout',
+                                     'stale_request', 'denied_or_failed', 'failed') else 'request_rejected'
+
+    def summary(self, result):
+        rows = result['containers']
+        return {'status': 'success', 'containers': len(rows),
+                'mounts': sum(len(row['mounts']) for row in rows),
+                'ports': sum(len(row['ports']) for row in rows),
+                'networks': sum(len(row['networks']) for row in rows),
+                'baseline_hash': result['baseline_hash'], 'storage': str(self.output)}
+
+    def run(self, follow=False, timeout=3600, interval=5):
+        deadline, failures = time.monotonic() + timeout, 0
+        self.deadline = deadline
+        while True:
+            if time.monotonic() >= deadline:
+                self.emit({'status': 'timeout', 'resume': str(self.path)})
+                return 75
+            try:
+                event = self.step()
+                failures = 0
+            except (OSError, ValueError, KeyError, TypeError):
+                failures += 1
+                event = {'status': 'transport_or_local_not_confirmed', 'resume': str(self.path)}
+            self.emit(event)
+            status = event['status']
+            if status == 'success':
+                return 0
+            if status in ('timeout', 'retry_later'):
+                return 75
+            if status not in ('authorization_required', 'waiting_for_authorization', 'transport_or_local_not_confirmed'):
+                return 1
+            if not follow or failures >= 3:
+                return 75
+            time.sleep(min(interval, max(0, deadline - time.monotonic())))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['deploy', 'plan', 'apply', 'task', 'status', 'projects', 'grants', 'grant_status', 'start', 'stop', 'restart', 'diagnose', 'retire', 'inventory', 'inventory_request', 'inspect', 'inspect_request', 'adoption_plan', 'adoption_request', 'adoption_apply', 'adoption_task'])
@@ -187,7 +377,7 @@ def main():
     parser.add_argument('--spec')
     parser.add_argument('--id')
     parser.add_argument('--adoption-action', choices=['observe','redeploy'], default='observe')
-    parser.add_argument('--state', help='private durable workflow state file for deploy')
+    parser.add_argument('--state', help='private durable state file for deploy or inspect_request')
     parser.add_argument('--mode', choices=['once', 'persistent', 'expiring'], default='persistent')
     parser.add_argument('--lifetime', type=int, default=86400)
     parser.add_argument('--follow', action='store_true', help='keep polling and automatically continue after Passkey approval')
@@ -205,6 +395,9 @@ def main():
     if args.operation == 'deploy':
         schema.check(args.state is not None and not args.id)
         return Workflow(client, args.state, spec, args.mode, args.lifetime).run(args.follow, args.timeout)
+    if args.operation == 'inspect_request' and (args.state or args.follow):
+        schema.check(args.state is not None and spec is None and args.id is None)
+        return InspectWorkflow(client, args.state, args.mode, args.lifetime).run(args.follow, args.timeout)
     schema.check(not args.state and not args.follow)
     if args.operation == 'adoption_plan':
         schema.check(spec is None and args.id is None)
