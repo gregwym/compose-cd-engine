@@ -42,7 +42,7 @@ def load(path):
         raise ValueError('short gateway secret')
     if 'agents' in cfg:
         from deployer.schema import name, check
-        check(isinstance(cfg['agents'], dict) and 1 <= len(cfg['agents']) <= 32)
+        check(isinstance(cfg['agents'], dict) and 0 <= len(cfg['agents']) <= 32)
         for agent, keypath in cfg['agents'].items():
             name(agent)
             st = protected_file(keypath).stat()

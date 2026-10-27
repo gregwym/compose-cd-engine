@@ -113,7 +113,7 @@ class Service:
         schema.check(abs(int(time.time()) - value['timestamp']) <= 60)
         reserve_nonce(value, str(self.root / 'nonces.sqlite'))
         project, op, payload = value['project'], value['operation'], value['payload']
-        inventory = op in ('inventory', 'inventory_request')
+        inventory = op in ('inventory', 'inventory_request', 'inspect', 'inspect_request')
         cfg = self.policy(require_enabled=op not in ('status', 'task', 'stop', 'grant_status', 'grants', 'projects') and not inventory)
         require('authorization' not in cfg or agent in cfg['authorization']['agents'] or paired, 'v2_required')
         if 'authorization' not in cfg:
@@ -124,6 +124,13 @@ class Service:
         if inventory:
             require(agent is not None and 'authorization' in cfg)
             from authorization.pairing import INVENTORY_PROJECT
+            if op in ('inspect', 'inspect_request'):
+                from deployer.adoption import inspect_project, inspection_scope
+                inspection_scope(project)
+                if op == 'inspect_request':
+                    return rpc.call(cfg['authorization'], 'inspect_request', {'agent': agent, 'project': project, **payload})
+                rpc.call(cfg['authorization'], 'inspect_access', {'agent': agent, 'project': project})
+                return inspect_project(self.docker, project)
             require(project == INVENTORY_PROJECT)
             if op == 'inventory_request':
                 return rpc.call(cfg['authorization'], 'inventory_request', {'agent': agent, **payload})
@@ -366,10 +373,9 @@ class Service:
                               stderr=subprocess.DEVNULL, timeout=timeout, check=True)
 
     def docker(self, *args):
-        return subprocess.run([self.runner.DOCKER, '--host', 'unix:///var/run/docker.sock', *args],
-                              env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/nonexistent'},
-                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, timeout=30, check=True).stdout
+        from shared.bounded import run
+        return run([self.runner.DOCKER, '--host', 'unix:///var/run/docker.sock', *args],
+                   env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/nonexistent'})
 
     def ready(self, project, services, timeout):
         deadline = time.monotonic() + timeout

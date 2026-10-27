@@ -21,7 +21,9 @@ Gateway operations and privileged Runner operations have independent allowlists.
 There is still one shared HMAC identity, not multi-user RBAC. Provisioning authority
 applies to the entire dedicated `cdp-` project namespace; the Mac does not gain
 access to unrelated existing projects. In-place adoption of existing projects is
-not implemented: do not rename or recreate them to enroll them.
+not implemented: do not rename or recreate them to enroll them. See
+[the staged adoption foundation](existing-project-adoption.md) for separately
+authorized structural inspection and the remaining migration gates.
 
 Runner retains host-admin-equivalent Docker socket authority. Policy is a caller
 constraint, not containment of a compromised Runner. Approved app images still

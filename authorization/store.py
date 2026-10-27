@@ -137,6 +137,27 @@ class Store(PairingStore):
         if op == 'paired':
             schema.fields(value, {'agent', 'public_key', 'audience'})
             return self.paired(value['agent'], value['public_key'], value['audience'])
+        if op == 'inspect_request':
+            from deployer.adoption import inspection_scope, inspection_policy
+            schema.fields(value, {'agent', 'project', 'mode', 'lifetime'})
+            wanted = inspection_scope(value['project'])
+            return self.propose({'agent': value['agent'], 'project': value['project'],
+                'plan': uuid.uuid4().hex, 'spec_hash': schema.fingerprint(wanted),
+                'policy': inspection_policy(value['project']), 'scope': wanted, 'sandbox': False,
+                'mode': value['mode'], 'lifetime': value['lifetime']})
+        if op == 'inspect_access':
+            from deployer.adoption import inspection_scope, inspection_policy
+            schema.fields(value, {'agent', 'project'})
+            wanted = inspection_scope(value['project'])
+            with self.db() as db:
+                self.require_active_agent(db, value['agent'])
+                for row in self.grants(db, value['agent'], value['project']):
+                    if row['policy'] == inspection_policy(value['project']) and json.loads(row['scope']) == wanted:
+                        if row['mode'] == 'once':
+                            db.execute("UPDATE grants SET status='consumed',revision=revision+1 WHERE id=?", (row['id'],))
+                        self.event(db, value['agent'], 'structure_read', row['id'])
+                        return {'status': 'authorized'}
+            require(False)
         if op == 'inventory_request':
             return self.inventory_request(value)
         if op == 'inventory_access':

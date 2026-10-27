@@ -179,7 +179,7 @@ class Workflow:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['deploy', 'plan', 'apply', 'task', 'status', 'projects', 'grants', 'grant_status', 'start', 'stop', 'restart', 'diagnose', 'retire', 'inventory', 'inventory_request'])
+    parser.add_argument('operation', choices=['deploy', 'plan', 'apply', 'task', 'status', 'projects', 'grants', 'grant_status', 'start', 'stop', 'restart', 'diagnose', 'retire', 'inventory', 'inventory_request', 'inspect', 'inspect_request'])
     parser.add_argument('project')
     parser.add_argument('--endpoint', required=True, help='private HTTPS origin; no path')
     parser.add_argument('--agent', help='defaults to PEM public-key identity, or openclaw for legacy HMAC')
@@ -205,7 +205,7 @@ def main():
         schema.check(args.state is not None and not args.id)
         return Workflow(client, args.state, spec, args.mode, args.lifetime).run(args.follow, args.timeout)
     schema.check(not args.state and not args.follow)
-    if args.operation == 'inventory_request':
+    if args.operation in ('inventory_request', 'inspect_request'):
         schema.check(spec is None and args.id is None)
         payload = {'mode': args.mode, 'lifetime': args.lifetime}
     elif args.operation == 'plan':

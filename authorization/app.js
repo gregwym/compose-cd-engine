@@ -43,7 +43,11 @@ function disclosure(parent, title) {
   const node = document.createElement('details'); text(node, 'summary', title); parent.append(node); return node;
 }
 function permissions(parent, scope) {
-  if (scope.read_only) {
+  if (scope.read_only && scope.operations && scope.operations.includes('inspect')) {
+    text(parent, 'p', 'READ ONLY: structural inspection of existing Compose project ' + scope.project + '.');
+    text(parent, 'p', 'Reveals Compose identity/paths, image IDs, mount paths, published ports and network names. No environment values, logs or application data.');
+    text(parent, 'p', 'This does not authorize adoption, recreation, lifecycle actions or ingress changes.');
+  } else if (scope.read_only) {
     text(parent, 'p', 'READ ONLY: deployed application inventory across this NAS, including applications not managed by deployer.');
     text(parent, 'p', 'Visible fields: ' + (scope.fields || []).join(', ') + '. No environment values, host paths, logs or application data.');
     text(parent, 'p', 'This does not permit starting, stopping, updating, importing or taking over applications.');

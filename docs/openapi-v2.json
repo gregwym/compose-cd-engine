@@ -1136,6 +1136,205 @@
           }
         }
       }
+    },
+    "/v2/projects/inspect": {
+      "post": {
+        "operationId": "inspect",
+        "security": [
+          {
+            "AgentHMAC": []
+          }
+        ],
+        "description": "Signed private POST; paired Ed25519 or explicit legacy identity, exact route/body binding, independent per-project Passkey structural-inspection grant. Reveals approved host paths, not env values/logs/app data. Does not authorize adoption or mutation.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "const": 2
+                  },
+                  "agent": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "project": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "operation": {
+                    "const": "inspect"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "timestamp": {
+                    "type": "integer"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {}
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "audience": {
+                    "type": "string",
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "version",
+                  "agent",
+                  "project",
+                  "operation",
+                  "request_id",
+                  "timestamp",
+                  "payload"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded, sanitized result. Inspect status/grant_diff/task_id; HTTP 200 alone does not mean deployed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid HMAC, nonce, route, principal or framing."
+          },
+          "503": {
+            "description": "Unavailable or outcome unknown; reconcile task/plan mapping before retry."
+          }
+        }
+      }
+    },
+    "/v2/projects/inspect-requests": {
+      "post": {
+        "operationId": "inspect_request",
+        "security": [
+          {
+            "AgentHMAC": []
+          }
+        ],
+        "description": "Signed private POST; paired Ed25519 or explicit legacy identity, exact route/body binding, independent per-project Passkey structural-inspection grant. Reveals approved host paths, not env values/logs/app data. Does not authorize adoption or mutation.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "const": 2
+                  },
+                  "agent": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "project": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "operation": {
+                    "const": "inspect_request"
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{32}$"
+                  },
+                  "timestamp": {
+                    "type": "integer"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "mode": {
+                        "enum": [
+                          "once",
+                          "expiring",
+                          "persistent"
+                        ]
+                      },
+                      "lifetime": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "maximum": 31536000
+                      }
+                    },
+                    "required": [
+                      "mode",
+                      "lifetime"
+                    ]
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "audience": {
+                    "type": "string",
+                    "maxLength": 253
+                  }
+                },
+                "required": [
+                  "version",
+                  "agent",
+                  "project",
+                  "operation",
+                  "request_id",
+                  "timestamp",
+                  "payload"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded, sanitized result. Inspect status/grant_diff/task_id; HTTP 200 alone does not mean deployed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Invalid HMAC, nonce, route, principal or framing."
+          },
+          "503": {
+            "description": "Unavailable or outcome unknown; reconcile task/plan mapping before retry."
+          }
+        }
+      }
     }
   },
   "components": {
