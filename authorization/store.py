@@ -15,6 +15,7 @@ class Store(PairingStore):
         self.path, self.origin = str(path), origin
         with self.db() as db:
             db.executescript('''
+                CREATE TABLE IF NOT EXISTS transaction_grants(task TEXT PRIMARY KEY, grant_id TEXT UNIQUE, binding TEXT);
                 CREATE TABLE IF NOT EXISTS principals(id TEXT PRIMARY KEY, kind TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS credentials(id BLOB PRIMARY KEY, admin TEXT, data BLOB, counter INTEGER, active INTEGER);
                 CREATE TABLE IF NOT EXISTS bootstrap(token TEXT PRIMARY KEY, admin TEXT, expires INTEGER);
@@ -73,6 +74,7 @@ class Store(PairingStore):
 
     def check(self, value):
         with self.db() as db:
+            self.require_active_agent(db, value['agent'])
             best, selected = value['scope'], None
             for grant in self.grants(db, value['agent'], value['project']):
                 if grant['policy'] != value['policy'] or (grant['mode'] == 'once' and grant['plan'] != value['plan']):
@@ -137,6 +139,62 @@ class Store(PairingStore):
         if op == 'paired':
             schema.fields(value, {'agent', 'public_key', 'audience'})
             return self.paired(value['agent'], value['public_key'], value['audience'])
+        if op in ('transaction_authorize', 'ingress_authorize'):
+            schema.fields(value, {'agent', 'project', 'plan', 'policy', 'scope', 'task'})
+            require(schema.HEX.fullmatch(value['plan']) and schema.HEX.fullmatch(value['task']))
+            binding = schema.fingerprint({k:v for k,v in value.items() if k != 'task'})
+            with self.db() as db:
+                self.require_active_agent(db, value['agent'])
+                bound = db.execute('SELECT grant_id,binding FROM transaction_grants WHERE task=?', (value['task'],)).fetchone()
+                rows = db.execute('SELECT * FROM grants WHERE agent=? AND project=? AND plan=? AND policy=?',
+                                  (value['agent'],value['project'],value['plan'],value['policy'])).fetchall()
+                for row in rows:
+                    if op == 'ingress_authorize':
+                        # Independent ingress authority: never sandbox or persistent grants,
+                        # and only a real transaction-bound Passkey credential may issue it.
+                        if (value['project'] != 'shared-app-ingress'
+                                or value['scope'].get('operations') != ['shared_ingress_apply']
+                                or row['mode'] != 'once' or not row['credential']
+                                or not db.execute('SELECT 1 FROM credentials WHERE id=? AND active=1',
+                                                  (row['credential'],)).fetchone()):
+                            continue
+                    if json.loads(row['scope']) != value['scope'] or (row['expires'] and row['expires'] <= time.time()):
+                        continue
+                    if bound:
+                        require(bound['binding'] == binding and bound['grant_id'] == row['id'], 'stale_request')
+                        require(row['status'] == 'active')
+                        return {'status':'authorized','grant_id':row['id']}
+                    if row['status'] != 'active':
+                        continue
+                    require(not db.execute('SELECT 1 FROM transaction_grants WHERE grant_id=?', (row['id'],)).fetchone())
+                    db.execute('INSERT INTO transaction_grants VALUES (?,?,?)', (value['task'],row['id'],binding))
+                    # Unique task binding consumes execution authority while keeping
+                    # the grant visible/revocable until completion or expiry.
+                    db.execute("UPDATE grants SET revision=revision+1 WHERE id=?", (row['id'],))
+                    self.event(db,value['agent'],'transaction_bound',value['task'])
+                    return {'status':'authorized','grant_id':row['id']}
+            require(False)
+        if op == 'inspect_request':
+            from deployer.adoption import inspection_scope, inspection_policy
+            schema.fields(value, {'agent', 'project', 'mode', 'lifetime'})
+            wanted = inspection_scope(value['project'])
+            return self.propose({'agent': value['agent'], 'project': value['project'],
+                'plan': uuid.uuid4().hex, 'spec_hash': schema.fingerprint(wanted),
+                'policy': inspection_policy(value['project']), 'scope': wanted, 'sandbox': False,
+                'mode': value['mode'], 'lifetime': value['lifetime']})
+        if op == 'inspect_access':
+            from deployer.adoption import inspection_scope, inspection_policy
+            schema.fields(value, {'agent', 'project'})
+            wanted = inspection_scope(value['project'])
+            with self.db() as db:
+                self.require_active_agent(db, value['agent'])
+                for row in self.grants(db, value['agent'], value['project']):
+                    if row['policy'] == inspection_policy(value['project']) and json.loads(row['scope']) == wanted:
+                        if row['mode'] == 'once':
+                            db.execute("UPDATE grants SET status='consumed',revision=revision+1 WHERE id=?", (row['id'],))
+                        self.event(db, value['agent'], 'structure_read', row['id'])
+                        return {'status': 'authorized'}
+            require(False)
         if op == 'inventory_request':
             return self.inventory_request(value)
         if op == 'inventory_access':

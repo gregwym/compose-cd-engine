@@ -8,7 +8,8 @@ from pathlib import PurePosixPath
 MAX_REQUEST = 65536
 OPS = frozenset({'plan', 'apply', 'task', 'status', 'start', 'stop', 'restart',
                  'grant_request', 'grant_status', 'grants', 'projects', 'diagnose', 'retire',
-                 'inventory', 'inventory_request'})
+                 'inventory', 'inventory_request', 'inspect', 'inspect_request',
+                 'adoption_plan', 'adoption_request', 'adoption_apply', 'adoption_task'})
 NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 HEX = re.compile(r'[a-f0-9]{32}')
 IMAGE = re.compile(r'([a-z0-9][a-z0-9./_-]+)@sha256:([a-f0-9]{64})')
@@ -70,9 +71,16 @@ def request(raw):
           and isinstance(value['payload'], dict))
     payload = value['payload']
     op = value['operation']
-    if op == 'plan':
+    if op == 'adoption_plan':
+        fields(payload, {'action'})
+        check(payload['action'] in ('observe', 'redeploy'))
+    elif op in ('adoption_request', 'adoption_apply', 'adoption_task'):
+        key = 'task_id' if op == 'adoption_task' else 'plan_id'
+        fields(payload, {key})
+        check(isinstance(payload[key], str) and HEX.fullmatch(payload[key]))
+    elif op == 'plan':
         fields(payload, {'services'}, {'egress'})
-    elif op == 'inventory_request':
+    elif op in ('inventory_request', 'inspect_request'):
         fields(payload, {'mode', 'lifetime'})
         check(payload['mode'] in ('once', 'persistent', 'expiring'))
         number(payload['lifetime'], 60, 31536000)
@@ -95,7 +103,7 @@ def request(raw):
 def policy(cfg):
     fields(cfg, {'workspace', 'storage', 'images', 'port_range', 'bind_ip',
                  'max_projects', 'max_services', 'max_memory_mb', 'max_cpus',
-                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'}, {'authorization', 'verification', 'release_groups'})
+                 'max_pids', 'health_timeout', 'enabled', 'allow_egress', 'operations'}, {'authorization', 'verification', 'release_groups', 'adoption'})
     check(type(cfg['enabled']) is bool and type(cfg['allow_egress']) is bool)
     check(isinstance(cfg['operations'], list) and cfg['operations']
           and all(isinstance(x, str) and x in OPS for x in cfg['operations']))
@@ -163,7 +171,7 @@ def policy(cfg):
             for field in ('socket', 'service_key'):
                 check(isinstance(item[field], str) and item[field].startswith('/') and '..' not in PurePosixPath(item[field]).parts)
             if key == 'authorization':
-                check(isinstance(item['agents'], dict) and 1 <= len(item['agents']) <= 32)
+                check(isinstance(item['agents'], dict) and 0 <= len(item['agents']) <= 32)
                 for agent, keypath in item['agents'].items():
                     name(agent)
                     check(isinstance(keypath, str) and keypath.startswith('/'))
@@ -177,6 +185,11 @@ def policy(cfg):
                     number(profile['memory_mb'], 32, cfg['max_memory_mb'])
                     number(profile['cpus'], 1, cfg['max_cpus'])
                     number(profile['max_services'], 1, cfg['max_services'])
+    if 'adoption' in cfg:
+        fields(cfg['adoption'], {'registry'})
+        check('authorization' in cfg)
+        registry = PurePosixPath(cfg['adoption']['registry'])
+        check(registry.is_absolute() and '..' not in registry.parts)
     groups = cfg.get('release_groups', [])
     check(isinstance(groups, list) and len(groups) <= 32)
     members = set()

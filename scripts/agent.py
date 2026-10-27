@@ -179,13 +179,14 @@ class Workflow:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['deploy', 'plan', 'apply', 'task', 'status', 'projects', 'grants', 'grant_status', 'start', 'stop', 'restart', 'diagnose', 'retire', 'inventory', 'inventory_request'])
+    parser.add_argument('operation', choices=['deploy', 'plan', 'apply', 'task', 'status', 'projects', 'grants', 'grant_status', 'start', 'stop', 'restart', 'diagnose', 'retire', 'inventory', 'inventory_request', 'inspect', 'inspect_request', 'adoption_plan', 'adoption_request', 'adoption_apply', 'adoption_task'])
     parser.add_argument('project')
     parser.add_argument('--endpoint', required=True, help='private HTTPS origin; no path')
     parser.add_argument('--agent', help='defaults to PEM public-key identity, or openclaw for legacy HMAC')
     parser.add_argument('--secret-file', required=True)
     parser.add_argument('--spec')
     parser.add_argument('--id')
+    parser.add_argument('--adoption-action', choices=['observe','redeploy'], default='observe')
     parser.add_argument('--state', help='private durable workflow state file for deploy')
     parser.add_argument('--mode', choices=['once', 'persistent', 'expiring'], default='persistent')
     parser.add_argument('--lifetime', type=int, default=86400)
@@ -205,7 +206,13 @@ def main():
         schema.check(args.state is not None and not args.id)
         return Workflow(client, args.state, spec, args.mode, args.lifetime).run(args.follow, args.timeout)
     schema.check(not args.state and not args.follow)
-    if args.operation == 'inventory_request':
+    if args.operation == 'adoption_plan':
+        schema.check(spec is None and args.id is None)
+        payload = {'action': args.adoption_action}
+    elif args.operation in ('adoption_request','adoption_apply','adoption_task'):
+        schema.check(spec is None and args.id is not None)
+        payload = {'task_id' if args.operation == 'adoption_task' else 'plan_id': args.id}
+    elif args.operation in ('inventory_request', 'inspect_request'):
         schema.check(spec is None and args.id is None)
         payload = {'mode': args.mode, 'lifetime': args.lifetime}
     elif args.operation == 'plan':

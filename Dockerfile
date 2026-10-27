@@ -31,6 +31,7 @@ COPY management/ management/
 COPY deployer/ deployer/
 COPY authorization/ authorization/
 COPY installer/ installer/
+COPY app_ingress/ app_ingress/
 RUN chmod -R a+rX /app
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/compose-cd-engine/
 COPY third_party/ /usr/share/doc/compose-cd-engine/third_party/

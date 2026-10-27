@@ -8,7 +8,10 @@ ROUTES = {'/v2/plans': 'plan', '/v2/deployments': 'apply', '/v2/tasks': 'task',
           '/v2/projects/start': 'start', '/v2/projects/stop': 'stop',
           '/v2/projects/restart': 'restart', '/v2/projects/diagnose': 'diagnose',
           '/v2/projects/retire': 'retire', '/v2/inventory': 'inventory',
-          '/v2/inventory-requests': 'inventory_request'}
+          '/v2/inventory-requests': 'inventory_request',
+          '/v2/projects/inspect': 'inspect', '/v2/projects/inspect-requests': 'inspect_request',
+          '/v2/adoption/plans': 'adoption_plan', '/v2/adoption/requests': 'adoption_request',
+          '/v2/adoption/apply': 'adoption_apply', '/v2/adoption/tasks': 'adoption_task'}
 
 
 def request(raw):

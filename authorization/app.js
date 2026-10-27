@@ -43,7 +43,27 @@ function disclosure(parent, title) {
   const node = document.createElement('details'); text(node, 'summary', title); parent.append(node); return node;
 }
 function permissions(parent, scope) {
-  if (scope.read_only) {
+  if ((scope.operations || []).includes('shared_ingress_apply')) {
+    text(parent, 'p', 'SHARED APPLICATION INGRESS: ' + scope.backend, 'sensitive');
+    const route = scope.route || {};
+    text(parent, 'p', 'Tailnet-only HTTPS: ' + route.hostname + ':' + route.https_port + '/. No Funnel and no application redeployment.');
+    text(parent, 'p', 'This is a separate once-only Serve configuration change, not an application-management grant.');
+    text(parent, 'p', 'Baseline: ' + scope.baseline_hash + '; candidate: ' + scope.candidate_hash + '; administrator backend: ' + scope.backend_hash);
+    if (scope.recovery_of) text(parent, 'p', 'RECOVERY: restore the previous Serve document for transaction ' + scope.recovery_of, 'sensitive');
+  }
+  if ((scope.operations || []).some(op => op.startsWith('adoption_'))) {
+    text(parent, 'p', 'EXISTING PROJECT TRANSACTION: ' + scope.project + ' · ' + scope.operations.join(', '), 'sensitive');
+    text(parent, 'p', 'Original project/container/mount/port/network identities are retained; no images pulled or data deleted. Redeploy can interrupt service. Runtime configuration is administrator-reviewed, NOT proven unchanged.');
+    text(parent, 'p', scope.configuration_notice || '');
+    text(parent, 'p', 'Configuration fields: ' + JSON.stringify(scope.configuration_changes || {}));
+    text(parent, 'p', 'Local image IDs: ' + (scope.image_ids || []).join(', '));
+    text(parent, 'p', 'Baseline: ' + scope.baseline_hash + '; declaration: ' + scope.declaration_hash + '; registration: ' + scope.registration_hash);
+  }
+  if (scope.read_only && scope.operations && scope.operations.includes('inspect')) {
+    text(parent, 'p', 'READ ONLY: structural inspection of existing Compose project ' + scope.project + '.');
+    text(parent, 'p', 'Reveals Compose identity/paths, image IDs, mount paths, published ports and network names. No environment values, logs or application data.');
+    text(parent, 'p', 'This does not authorize adoption, recreation, lifecycle actions or ingress changes.');
+  } else if (scope.read_only) {
     text(parent, 'p', 'READ ONLY: deployed application inventory across this NAS, including applications not managed by deployer.');
     text(parent, 'p', 'Visible fields: ' + (scope.fields || []).join(', ') + '. No environment values, host paths, logs or application data.');
     text(parent, 'p', 'This does not permit starting, stopping, updating, importing or taking over applications.');

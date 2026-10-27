@@ -1,0 +1,113 @@
+# STANDALONE administrator-provisioned shared application node. Never merge into apps.
+# No app recreation, image pull, Docker socket, host ports, TUN, Funnel, or control secrets in proxy/gateway.
+x-engine: &engine
+  image: ${APP_INGRESS_ENGINE_IMAGE:?Set an already verified locally available engine image}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 64
+  mem_limit: 96m
+  tmpfs: [/tmp:size=4m,noexec,nosuid,nodev]
+services:
+  bootstrap:
+    <<: *engine
+    profiles: [bootstrap]
+    user: "0:0"
+    network_mode: none
+    command: [python3, -m, app_ingress.init, --root, "${APP_INGRESS_ROOT:?Set dedicated absolute ingress root}"]
+    volumes:
+      - type: bind
+        source: ${APP_INGRESS_PARENT:?Set protected existing parent of ingress root}
+        target: ${APP_INGRESS_PARENT:?Set protected existing parent of ingress root}
+        bind: {create_host_path: false}
+  app-tailscale:
+    image: tailscale/tailscale:v1.104.2
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TS_USERSPACE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SOCKET: /run/tailscale/tailscaled.sock
+      TS_HOSTNAME: ${APP_INGRESS_NODE_NAME:?Set a distinct shared application node name}
+      TS_AUTH_ONCE: "true"
+    networks: [application_backends]
+    volumes:
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/tailscale-state
+        target: /var/lib/tailscale
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/tailscale-run
+        target: /run/tailscale
+        bind: {create_host_path: false}
+    tmpfs: [/tmp:size=4m,noexec,nosuid,nodev]
+  app-proxy:
+    <<: *engine
+    restart: unless-stopped
+    user: "10007:10007"
+    command: [python3, -m, app_ingress.proxy]
+    network_mode: service:app-tailscale
+    volumes:
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/policy
+        target: /etc/app-ingress
+        read_only: true
+        bind: {create_host_path: false}
+  ingress-broker:
+    <<: *engine
+    restart: unless-stopped
+    user: "0:0"
+    command: [python3, -m, app_ingress.server]
+    group_add: ["30006", "${APP_INGRESS_APPROVAL_GID:-30004}", "${APP_INGRESS_SECRET_GID:-30002}"]
+    network_mode: none
+    volumes:
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/policy
+        target: /etc/app-ingress
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${APP_INGRESS_APPROVAL_KEY:?Set existing protected approval service key file}
+        target: /etc/app-ingress-secrets/approval-service.key
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${APP_INGRESS_APPROVAL_RUN:?Set existing approval socket directory}
+        target: /run/approval
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/tailscale-run
+        target: /run/tailscale
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/state
+        target: /var/lib/app-ingress
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/run
+        target: /run/app-ingress
+        bind: {create_host_path: false}
+  ingress-gateway:
+    <<: *engine
+    profiles: [gateway]
+    restart: unless-stopped
+    user: "10008:30006"
+    command: [python3, -m, app_ingress.gateway]
+    # Existing MANAGEMENT node only; never the new app-tailscale namespace.
+    network_mode: container:${APP_INGRESS_CONTROL_CONTAINER:?Set existing control Tailscale container name}
+    environment:
+      APP_INGRESS_MANAGEMENT_HOST: ${APP_INGRESS_MANAGEMENT_HOST:?Set exact HTTPS management host with port}
+    volumes:
+      - type: bind
+        source: ${APP_INGRESS_ROOT}/run
+        target: /run/app-ingress
+        read_only: true
+        bind: {create_host_path: false}
+networks:
+  application_backends:
+    external: true
+    name: ${APP_INGRESS_BACKEND_NETWORK:?Set verified existing application-only backend network}

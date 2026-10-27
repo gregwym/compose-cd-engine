@@ -83,6 +83,9 @@ class Service:
                 self.audit_task(db, row[0], 'outcome_unknown')
             db.execute("UPDATE tasks SET state='outcome_unknown', updated=? WHERE state='running'", (int(time.time()),))
 
+        from deployer.transactions import Broker
+        self.adoption = Broker(self)
+
     @contextmanager
     def db(self):
         db = sqlite3.connect(str(self.db_path), timeout=5)
@@ -113,17 +116,29 @@ class Service:
         schema.check(abs(int(time.time()) - value['timestamp']) <= 60)
         reserve_nonce(value, str(self.root / 'nonces.sqlite'))
         project, op, payload = value['project'], value['operation'], value['payload']
-        inventory = op in ('inventory', 'inventory_request')
-        cfg = self.policy(require_enabled=op not in ('status', 'task', 'stop', 'grant_status', 'grants', 'projects') and not inventory)
+        from deployer.transactions import OPS as ADOPTION_OPS
+        adoption = op in ADOPTION_OPS
+        inventory = op in ('inventory', 'inventory_request', 'inspect', 'inspect_request')
+        cfg = self.policy(require_enabled=op not in ('status', 'task', 'stop', 'grant_status', 'grants', 'projects') and not inventory and not adoption)
         require('authorization' not in cfg or agent in cfg['authorization']['agents'] or paired, 'v2_required')
         if 'authorization' not in cfg:
             require(agent is None, 'authorization_not_configured')
         # Inventory is an independent Passkey capability, available even while
         # application provisioning is disabled. It cannot reach mutation paths.
         require(op in cfg['operations'] or inventory, 'forbidden_by_policy')
+        if adoption:
+            require(op in cfg['operations'], 'forbidden_by_policy')
+            return self.adoption.dispatch(cfg, project, agent, op, payload)
         if inventory:
             require(agent is not None and 'authorization' in cfg)
             from authorization.pairing import INVENTORY_PROJECT
+            if op in ('inspect', 'inspect_request'):
+                from deployer.adoption import inspect_project, inspection_scope
+                inspection_scope(project)
+                if op == 'inspect_request':
+                    return rpc.call(cfg['authorization'], 'inspect_request', {'agent': agent, 'project': project, **payload})
+                rpc.call(cfg['authorization'], 'inspect_access', {'agent': agent, 'project': project})
+                return inspect_project(self.docker, project)
             require(project == INVENTORY_PROJECT)
             if op == 'inventory_request':
                 return rpc.call(cfg['authorization'], 'inventory_request', {'agent': agent, **payload})
@@ -132,6 +147,7 @@ class Service:
             return collect(self.docker)
         if agent:
             with self.db() as db:
+                require(not db.execute('SELECT 1 FROM adopted_projects WHERE project=?', (project,)).fetchone(), 'use_adoption_api')
                 owner = db.execute('SELECT agent FROM project_auth WHERE id=?', (project,)).fetchone()
                 exists = db.execute('SELECT 1 FROM projects WHERE id=?', (project,)).fetchone()
                 require((not exists and not owner) or (owner and owner[0] == agent))
@@ -365,11 +381,10 @@ class Service:
                               stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, timeout=timeout, check=True)
 
-    def docker(self, *args):
-        return subprocess.run([self.runner.DOCKER, '--host', 'unix:///var/run/docker.sock', *args],
-                              env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/nonexistent'},
-                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, timeout=30, check=True).stdout
+    def docker(self, *args, timeout=30):
+        from shared.bounded import run
+        return run([self.runner.DOCKER, '--host', 'unix:///var/run/docker.sock', *args],
+                   env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/nonexistent'}, timeout=timeout)
 
     def ready(self, project, services, timeout):
         deadline = time.monotonic() + timeout
@@ -499,6 +514,8 @@ class Service:
         return result
 
     def run_one(self):
+        if self.adoption.run_one():
+            return True
         with self.lock(blocking=True):
             with self.db() as db:
                 row = db.execute("SELECT id,project,operation,spec,policy,base FROM tasks WHERE state='queued' ORDER BY rowid LIMIT 1").fetchone()
@@ -516,7 +533,7 @@ class Service:
                     auth = db.execute('SELECT agent,plan,grant_id FROM task_auth WHERE id=?', (task,)).fetchone()
                     require(('authorization' not in cfg and not auth) or ('authorization' in cfg and auth), 'migration_required')
                     if auth:
-                        require(auth[0] in cfg['authorization']['agents'])
+                        require(auth[0] in cfg['authorization']['agents'] or auth[0].startswith('agent-'))
                         require(self.authorize(auth[0], project, auth[1], spec, cfg, op) == auth[2])
                     current = db.execute('SELECT revision,recovery FROM projects WHERE id=?', (project,)).fetchone()
                     schema.check(current is not None and current[0] == base and (op == 'stop' or not current[1]))

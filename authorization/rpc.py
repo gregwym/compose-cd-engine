@@ -32,7 +32,7 @@ def call(cfg, operation, payload):
     schema.check(len(wire) <= 65536)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(240 if operation == 'verify' else 10)
+            sock.settimeout(240 if operation == 'verify' else (2 if operation in ('inspect_access','inspect_request') else 10))
             sock.connect(cfg['socket'])
             sock.sendall(wire + b'\n')
             result = json.loads(read_frame(sock, 65536))

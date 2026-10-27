@@ -28,3 +28,5 @@
 !installer/
 !installer/*.py
 !installer/*.json
+!app_ingress/
+!app_ingress/*.py
