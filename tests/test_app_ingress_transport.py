@@ -24,9 +24,11 @@ class LocalAPI(unittest.TestCase):
                 self.send_response(200);self.send_header('ETag',str(self.server.revision));self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
             def do_POST(self):
                 if self.path!='/localapi/v0/serve-config':raise AssertionError(self.path)
+                # Match pinned upstream: decode the body before evaluating the ETag.
+                value=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 if self.headers.get('If-Match')!=str(self.server.revision):
-                    self.send_response(412);self.end_headers();return
-                self.server.config=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                    self.send_response(412);self.send_header('Content-Length','0');self.end_headers();return
+                self.server.config=value
                 self.server.revision+=1
                 self.send_response(200);self.send_header('Content-Length','2');self.end_headers();self.wfile.write(b'{}')
         with tempfile.TemporaryDirectory() as temp:
