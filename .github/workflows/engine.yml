@@ -34,8 +34,10 @@ jobs:
           assert set(s) == {'tailscale', 'gateway', 'runner'}
           assert s['runner']['network_mode'] == 'none'
           assert s['gateway']['network_mode'] == 'service:tailscale'
-          sock = lambda name: any(v['source'] == '/var/run/docker.sock' for v in s[name].get('volumes', []))
+          sock = lambda name: any(v.get('source') == '/var/run/docker.sock' for v in s[name].get('volumes', []))
           assert sock('runner') and not sock('gateway') and not sock('tailscale')
+          assert {'type': 'tmpfs', 'target': '/volume1/docker/deployer'}.items() <= next(
+              v for v in s['runner']['volumes'] if v['type'] == 'tmpfs').items()
           assert all(v['source'].startswith('/volume1/docker/deployer/') for v in s['gateway']['volumes'])
           assert all(not x.get('ports') and not x.get('privileged') for x in s.values())
           PY

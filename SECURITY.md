@@ -23,9 +23,9 @@
 - `network_mode: host`, extra capabilities, devices and host paths outside the project
   are allowed after review; read the highlighted items before approving.
 - `env_file`, `include` and `extends.file` are read by the runner's Compose while rendering and
-  are gone from the rendered configuration, so the hard policy cannot check their sources. They
-  can pull values from files the runner sees (`PROJECTS_ROOT`, including the deployer directory)
-  into an application's environment; review those lines in the diff before approving.
+  are gone from the rendered configuration, so the hard policy cannot check their sources. The
+  runner sees the deployer directory only as an empty tmpfs, so deployer state cannot be read this
+  way, but other projects' files under `PROJECTS_ROOT` can; review those lines in the diff.
 - Logs are returned to paired agents unredacted; applications that log secrets expose them.
 - Restoring an old `state/gateway` backup can bring back revoked grants.
 - Not independently audited.

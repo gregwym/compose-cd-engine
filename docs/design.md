@@ -104,7 +104,7 @@ webhook 密钥由 gateway 生成，只在 Passkey 登录后的主页显示。`CD
 
 风险项（允许，但在审批页高亮）：`network_mode: host`、其余 `cap_add`、`devices`、挂载项目目录以外的路径（bind 挂载显示读写属性）、新增或变更的端口。
 
-`env_file`、`include`、`extends.file` 由 runner 里的 Compose 在渲染时读取，渲染结果中已不再出现，硬策略看不到它们的来源，只能在审批页的 compose.yaml diff 中由主人审查（见 SECURITY.md）。
+`env_file`、`include`、`extends.file` 由 runner 里的 Compose 在渲染时读取，渲染结果中已不再出现，硬策略看不到它们的来源。runner 容器里 deployer 目录被一层空 tmpfs 覆盖，所以读不到 deployer 状态；读取其他项目的文件只能在审批页的 compose.yaml diff 中由主人审查（见 SECURITY.md）。
 
 已有项目本身违反硬策略（例如 Portainer 挂了 docker.sock）时：只读操作和 start/stop/restart 可用；会重建容器的 `up`/`update` 和变更都被拒绝，需在 CM 里处理。`up`/`update` 每次执行前重新检查硬策略，因为批准后文件或符号链接可能已改变。
 

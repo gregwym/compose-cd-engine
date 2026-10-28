@@ -68,4 +68,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Same path inside and outside, so Compose labels and relative mounts match Container Manager.
       - ${PROJECTS_ROOT:-/volume1/docker}:${PROJECTS_ROOT:-/volume1/docker}
+      # Empty over the deployer's own directory: env_file, include and extends are read here while
+      # rendering, and the policy cannot see their sources, so deployer state must not be readable.
+      - type: tmpfs
+        target: ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}
+        tmpfs: {size: 65536}
       - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/run/runner:/run/compose-cd
