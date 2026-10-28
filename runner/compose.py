@@ -86,7 +86,8 @@ def base(identity, files=None, env_file=None):
 
 
 def render(identity, files=None, env_file=None, interpolate=True):
-    argv = base(identity, files, env_file) + ['config', '--format', 'json']
+    # --no-env-resolution keeps env_file entries in the output, so the policy sees which host files they read.
+    argv = base(identity, files, env_file) + ['config', '--format', 'json', '--no-env-resolution']
     if not interpolate:
         argv.append('--no-interpolate')
     return json.loads(run(argv, timeout=60))

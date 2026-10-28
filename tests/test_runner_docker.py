@@ -129,9 +129,10 @@ class RunnerDocker(unittest.TestCase):
         env_file = HEALTHY.replace('    volumes:', '    env_file: [{path}]\n    volumes:')
         secret = HEALTHY.replace('    volumes:', '    secrets: [s]\n    volumes:') + 'secrets:\n  s:\n    file: {path}\n'
         for text in (env_file, secret):
-            with self.assertRaises(Denied) as caught:
-                self.runner.plan(self.identity(), text.format(path=deployer / 'state'))
-            self.assertEqual(caught.exception.code, 'policy')
+            for path in (deployer / 'state', '../../deployer/state'):  # relative paths resolve from the project
+                with self.assertRaises(Denied, msg=(text, path)) as caught:
+                    self.runner.plan(self.identity(), text.format(path=path))
+                self.assertEqual(caught.exception.code, 'policy')
         self.assertIn(f'web: env_file: host file {outside}',
                       self.runner.plan(self.identity(), env_file.format(path=outside))['highlights'])
         self.assertIn(f'secret s: host file {outside}',
