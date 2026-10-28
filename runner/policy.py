@@ -102,15 +102,20 @@ def violations(config, deploy_root):
     return found
 
 
+def unchecked(path):
+    # The runner sees only PROJECTS_ROOT; elsewhere a symlink to a forbidden path cannot be detected.
+    return '' if os.path.lexists(path) else ', symlinks not checked'
+
+
 def highlights(config, working_dir):
     """Every reviewable risk of a configuration, as stable strings."""
     out = set()
     for name, device in volume_devices(config):
         if not under(normal(device), working_dir):
-            out.add(f'volume {name}: host path {normal(device)}')
+            out.add(f'volume {name}: host path {normal(device)}{unchecked(device)}')
     for label, path in host_files(config):
         if not under(normal(path), working_dir):
-            out.add(f'{label}: host file {normal(path)}')
+            out.add(f'{label}: host file {normal(path)}{unchecked(path)}')
     for name, service in (config.get('services') or {}).items():
         if service.get('network_mode') == 'host':
             out.add(f'{name}: host network')
@@ -123,7 +128,7 @@ def highlights(config, working_dir):
             source = normal(item['source'])
             if not under(source, working_dir):
                 mode = 'read-only' if item.get('read_only') else 'READ-WRITE'
-                out.add(f"{name}: host path {source} -> {item.get('target')} ({mode})")
+                out.add(f"{name}: host path {source} -> {item.get('target')} ({mode}{unchecked(source)})")
         for port in service.get('ports') or []:
             if isinstance(port, dict) and port.get('published'):
                 host = port.get('host_ip') or '0.0.0.0'

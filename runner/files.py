@@ -117,6 +117,18 @@ def entries(text):
     return out
 
 
+def env_values(data):
+    """The values in .env text, unquoted, for scrubbing them from Compose error output."""
+    values = set()
+    for key, text in entries((data or b'').decode('utf-8', 'replace')):
+        if key:
+            value = text.split('=', 1)[1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            values.add(value)
+    return values
+
+
 def env_keys(data):
     keys = []
     for key, _ in entries((data or b'').decode('utf-8', 'replace')):

@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 import time
+from pathlib import Path
+from runner.files import env_values
 from shared.wire import Denied
 
 DOCKER = os.environ.get('CD_DOCKER', '/usr/local/bin/docker')
@@ -18,16 +20,32 @@ def environment():
             'DOCKER_HOST': os.environ.get('DOCKER_HOST', 'unix:///var/run/docker.sock')}
 
 
-def run(argv, timeout=120, check=True):
+def scrub(text, secrets):
+    # Values of 4+ characters only: shorter ones are not secrets and would garble the message.
+    for value in sorted((v for v in secrets if len(v) >= 4), key=len, reverse=True):
+        text = text.replace(value, '***')
+    return text
+
+
+def run(argv, timeout=120, check=True, secrets=()):
     try:
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=environment(), timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Denied('timeout', f'{argv[1] if len(argv) > 1 else "docker"} exceeded {timeout}s') from None
     if check and result.returncode:
-        tail = result.stderr.decode('utf-8', 'replace').strip()[-2000:]
+        # Errors reach agents, and Compose quotes interpolated .env values in them.
+        tail = scrub(result.stderr.decode('utf-8', 'replace'), secrets).strip()[-2000:]
         raise Denied('docker_failed', tail)
     return result.stdout
+
+
+def secrets_of(identity, env_file=None):
+    path = Path(env_file) if env_file is not None else Path(identity['working_dir']) / '.env'
+    try:
+        return env_values(path.read_bytes())
+    except OSError:
+        return set()
 
 
 def containers():
@@ -89,11 +107,11 @@ def render(identity, files=None, env_file=None, interpolate=True):
     argv = base(identity, files, env_file) + ['config', '--format', 'json']
     if not interpolate:
         argv.append('--no-interpolate')
-    return json.loads(run(argv, timeout=60))
+    return json.loads(run(argv, timeout=60, secrets=secrets_of(identity, env_file)))
 
 
 def compose(identity, *args, timeout=1800):
-    return run(base(identity) + list(args), timeout=timeout)
+    return run(base(identity) + list(args), timeout=timeout, secrets=secrets_of(identity))
 
 
 def wait_healthy(identity, timeout, services=()):

@@ -115,7 +115,7 @@ class HardPolicy(unittest.TestCase):
             self.assertTrue(policy.violations(config, '/volume1/docker/deployer'), device)
         config['volumes']['data']['driver_opts']['device'] = '/volume1/media'
         self.assertEqual(policy.violations(config, '/volume1/docker/deployer'), [])
-        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'volume data: host path /volume1/media'})
+        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'volume data: host path /volume1/media, symlinks not checked'})
 
     def test_secret_and_config_files_follow_the_mount_rules(self):
         for path in ('/etc/shadow', '/volume1/docker/deployer/gateway/gateway.sqlite'):
@@ -123,13 +123,18 @@ class HardPolicy(unittest.TestCase):
                 self.assertTrue(policy.violations(config, '/volume1/docker/deployer'), (path, config))
         config = {'secrets': {'s': {'file': '/volume1/keys/s'}}, 'configs': {'c': {'file': '/volume1/docker/app/c'}}}
         self.assertEqual(policy.violations(config, '/volume1/docker/deployer'), [])
-        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'secret s: host file /volume1/keys/s'})
+        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'secret s: host file /volume1/keys/s, symlinks not checked'})
 
     def test_directories_containing_the_deployer_are_rejected(self):
         bind = lambda source: [{'type': 'bind', 'source': source, 'target': '/x'}]
         self.assertEqual(self.violations(volumes=bind('/volume1/docker')), ['web: mounts the deployer directory'])
         self.assertEqual(self.violations(volumes=bind('/volume1/docker/app')), [])
         self.assertEqual(self.violations(volumes=bind('/volume1/docker/deployer-old')), [])
+
+    def test_host_paths_the_runner_can_see_are_not_marked_unchecked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = service(volumes=[{'type': 'bind', 'source': tmp, 'target': '/x', 'read_only': True}])
+            self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {f'web: host path {tmp} -> /x (read-only)'})
 
     def test_violations_do_not_echo_paths(self):
         found = policy.violations(service(volumes=[{'type': 'bind', 'source': '/etc/hunter2', 'target': '/x'}]), '')
@@ -148,7 +153,7 @@ class HardPolicy(unittest.TestCase):
                                  {'type': 'bind', 'source': '/volume1/docker/app/data', 'target': '/d'}])
         self.assertEqual(policy.new_highlights(before, after, '/volume1/docker/app'), [
             'web: device /dev/dri:/dev/dri', 'web: host network',
-            'web: host path /volume1/media -> /m (read-only)', 'web: port 0.0.0.0:443 -> 443/tcp'])
+            'web: host path /volume1/media -> /m (read-only, symlinks not checked)', 'web: port 0.0.0.0:443 -> 443/tcp'])
 
 
 class Repositories(unittest.TestCase):
@@ -211,6 +216,16 @@ class TransactionalApply(unittest.TestCase):
             with self.assertRaises(Denied) as caught:
                 self.compose.run(['docker', 'compose', 'up'], timeout=1)
         self.assertEqual(caught.exception.code, 'timeout')
+
+    def test_compose_errors_do_not_echo_env_values(self):
+        import subprocess
+        (self.wd / '.env').write_bytes(b"SECRET='hunter2-value'\nPORT=80\n")
+        failed = subprocess.CompletedProcess([], 1, b'', b'invalid hostPort: hunter2-value; port 80')
+        identity = {'project': 'app', 'working_dir': str(self.wd), 'config_files': [str(self.wd / 'compose.yaml')]}
+        with self.mock.patch('subprocess.run', return_value=failed):
+            with self.assertRaises(Denied) as caught:
+                self.compose.compose(identity, 'up')
+        self.assertEqual(caught.exception.detail, 'invalid hostPort: ***; port 80')
 
     def test_edit_after_planning_is_stale_and_kept(self):
         (self.wd / 'compose.yaml').write_bytes(b'edited by Container Manager\n')

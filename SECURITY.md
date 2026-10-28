@@ -26,6 +26,11 @@
   are gone from the rendered configuration, so the hard policy cannot check their sources. The
   runner sees the deployer directory only as an empty tmpfs, so deployer state cannot be read this
   way, but other projects' files under `PROJECTS_ROOT` can; review those lines in the diff.
+- Bind and file sources are also checked after resolving symlinks, but only where the runner can
+  see them (`PROJECTS_ROOT`). Elsewhere a host symlink to a forbidden path cannot be detected; such
+  sources are highlighted with "symlinks not checked".
+- Compose error output returned to agents has `.env` values of four or more characters replaced
+  with `***`; shorter values are not scrubbed.
 - Logs are returned to paired agents unredacted; applications that log secrets expose them.
 - Restoring an old `state/gateway` backup can bring back revoked grants.
 - Not independently audited.
