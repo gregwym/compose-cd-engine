@@ -1,4 +1,5 @@
 """Hard limits and review highlights for a fully rendered Compose configuration."""
+import os
 import posixpath
 import re
 
@@ -16,9 +17,19 @@ def normal(path):
 
 
 def forbidden_source(source, deploy_root):
+    """Check the lexical path and, where the runner can see it, the symlink-resolved target."""
     path = normal(source)
     if not path.startswith('/'):
         return None
+    reason = forbidden_path(path, deploy_root)
+    if reason:
+        return reason
+    real = os.path.realpath(path)
+    reason = forbidden_path(real, deploy_root) if real != path else None
+    return 'symlink ' + reason if reason else None
+
+
+def forbidden_path(path, deploy_root):
     # Paths can come from interpolated .env values, so they stay out of the message.
     if path == '/' or path.endswith('docker.sock'):
         return 'mounts the host root or a Docker socket'

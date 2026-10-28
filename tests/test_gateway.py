@@ -121,6 +121,12 @@ class Gateway(unittest.TestCase):
         self.assertEqual(args['plan']['env_set'], {'TOKEN': 'secret-value'})
         self.assertEqual(self.agent.error('restart', project='app'), 'not_authorized')
 
+    def test_env_only_change_does_not_echo_current_compose_to_the_agent(self):
+        self.stack.pair()
+        request = self.agent('request', kind='change', project='app', env_set={'A': '1'})
+        self.assertNotIn('compose', request['detail']['plan'])
+        self.assertIn('compose', self.stack.browser.request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
+
     def test_runner_refusal_is_returned_and_no_request_created(self):
         from shared.wire import Denied
         self.stack.pair()

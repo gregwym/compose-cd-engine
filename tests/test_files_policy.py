@@ -195,3 +195,58 @@ class TransactionalApply(unittest.TestCase):
 def server_sha(data):
     from runner import server
     return server.sha(data)
+
+
+class ResolvedAndRechecked(unittest.TestCase):
+    def test_symlinked_bind_source_to_forbidden_target_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / 'media'
+            link.symlink_to('/etc')
+            found = policy.violations(service(volumes=[{'type': 'bind', 'source': str(link), 'target': '/m'}]), '')
+            self.assertEqual(found, ['web: symlink mounts a system path'])
+
+    def test_up_and_update_recheck_policy(self):
+        from unittest import mock
+        from runner import compose, server
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            wd = root / 'app'
+            wd.mkdir()
+            (wd / 'compose.yaml').write_text('x: 1\n')
+            runner = server.Runner(root)
+            identity = {'project': 'app', 'working_dir': str(wd), 'config_files': [str(wd / 'compose.yaml')]}
+            bad = service(privileged=True)
+            with mock.patch.object(compose, 'observed_identity', return_value=None), \
+                    mock.patch.object(compose, 'render', return_value=bad), \
+                    mock.patch.object(compose, 'compose') as run:
+                for action in ('up', 'update'):
+                    with self.assertRaises(Denied) as caught:
+                        runner.lifecycle(identity, action)
+                    self.assertEqual(caught.exception.code, 'policy')
+                run.assert_not_called()
+
+    def test_write_failure_restores_files(self):
+        from unittest import mock
+        from runner import compose, server
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            wd = root / 'app'
+            wd.mkdir()
+            (wd / 'compose.yaml').write_bytes(b'old: 1\n')
+            runner = server.Runner(root, health_timeout=1)
+            identity = {'project': 'app', 'working_dir': str(wd), 'config_files': [str(wd / 'compose.yaml')]}
+            plan = {'identity': identity, 'new': False, 'compose': 'new: 1\n', 'env_set': {'A': '1'}, 'env_unset': [],
+                    'base': {'compose': server.sha(b'old: 1\n'), 'env': None}}
+            real = files.write_in_place
+
+            def flaky(path, data, *args, **kwargs):
+                if Path(path).name == '.env':
+                    raise OSError(28, 'No space left on device')
+                return real(path, data, *args, **kwargs)
+            with mock.patch.object(files, 'write_in_place', flaky), mock.patch.object(compose, 'compose'), \
+                    mock.patch.object(compose, 'wait_healthy'):
+                result = runner.write_and_up(plan)
+            self.assertEqual(result['status'], 'rolled_back')
+            self.assertEqual(result['error'], 'write_failed')
+            self.assertEqual((wd / 'compose.yaml').read_bytes(), b'old: 1\n')
+            self.assertFalse((wd / '.env').exists())

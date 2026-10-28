@@ -126,6 +126,11 @@ class Runner:
                 if action != 'stop':
                     compose.wait_healthy(identity, self.health_timeout, services)
                 return {'status': 'success'}
+            if action in ('up', 'update'):
+                # Files may have changed since the grant; anything that (re)creates containers re-checks the policy.
+                found = policy.violations(compose.render(identity), self.deploy_root)
+                if found:
+                    raise Denied('policy', found)
             if action == 'up':
                 compose.compose(identity, 'up', '-d', '--no-build', *services)
                 compose.wait_healthy(identity, self.health_timeout, services)
@@ -148,9 +153,10 @@ class Runner:
             # --pull never: the restored image id must decide what starts, even with pull_policy: always.
             compose.compose(identity, 'up', '-d', '--no-build', '--pull', 'never', '--remove-orphans', *services)
             compose.wait_healthy(identity, self.health_timeout, services)
-        except Denied as again:
+        except (Denied, OSError) as again:
+            code, detail = (again.code, again.detail) if isinstance(again, Denied) else ('write_failed', type(again).__name__)
             return {'status': 'failed', 'error': exc.code, 'detail': exc.detail,
-                    'rollback_error': again.code, 'rollback_detail': again.detail}
+                    'rollback_error': code, 'rollback_detail': detail}
         return {'status': 'rolled_back', 'error': exc.code, 'detail': exc.detail}
 
     def down(self, identity):
@@ -235,12 +241,7 @@ class Runner:
             raise Denied('stale', 'project files changed since approval')
         data = plan['compose'].encode()
         env = files.edit_env(old_env, plan['env_set'], plan['env_unset']) if (plan['env_set'] or plan['env_unset']) else old_env
-        backups = [b for b in (files.backup(path, old) if data != old else None,
-                               files.backup(env_path, old_env) if env != old_env else None) if b]
-        if data != old:
-            files.write_in_place(path, data, like=wd, mode=0o644)
-        if env != old_env:
-            files.write_in_place(env_path, env, like=wd, mode=0o600)
+        backups = []
 
         def restore():
             files.write_in_place(path, old)
@@ -250,9 +251,16 @@ class Runner:
                 files.write_in_place(env_path, old_env)
 
         try:
+            backups = [b for b in (files.backup(path, old) if data != old else None,
+                                   files.backup(env_path, old_env) if env != old_env else None) if b]
+            if data != old:
+                files.write_in_place(path, data, like=wd, mode=0o644)
+            if env != old_env:
+                files.write_in_place(env_path, env, like=wd, mode=0o600)
             compose.compose(identity, 'up', '-d', '--no-build', '--remove-orphans')
             compose.wait_healthy(identity, self.health_timeout)
-        except Denied as exc:
+        except (Denied, OSError) as caught:
+            exc = caught if isinstance(caught, Denied) else Denied('write_failed', type(caught).__name__)
             if not plan['new']:
                 return self.recover(exc, restore, identity)
             # A new project has nothing to return to: stop it, keep its files for inspection.

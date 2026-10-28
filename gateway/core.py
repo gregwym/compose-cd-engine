@@ -124,7 +124,8 @@ class Gateway:
         elif kind == 'change':
             detail = {'plan': self.runner('plan', identity=self.identity(agent, project),
                                           compose_text=arg(args, 'compose', str, required=False),
-                                          env_set=self.env_set(args), env_unset=arg(args, 'env_unset', list, []))}
+                                          env_set=self.env_set(args), env_unset=arg(args, 'env_unset', list, [])),
+                      'compose_supplied': args.get('compose') is not None}
         elif kind == 'create':
             if not NAME.fullmatch(project):
                 raise Denied('invalid_argument', 'project')
@@ -202,6 +203,8 @@ class Gateway:
                 # .env values; agents without `read` must not get them before the owner approves.
                 for key in ('diff', 'highlights'):
                     plan.pop(key, None)
+                if detail.get('compose_supplied') is False:
+                    plan.pop('compose', None)  # an .env-only change would echo the current Compose file
             detail['plan'] = plan
         return {'id': item['id'], 'kind': item['kind'], 'project': item['project'], 'agent': item['agent'],
                 'status': item['status'], 'created': item['created'], 'expires': item['expires'],
