@@ -32,6 +32,7 @@ class Gateway:
         self.origin, self.host, self.funnel = origin, host, funnel
         self.apply_serve = apply_serve
         self.wake = threading.Event()
+        self.serve_lock = threading.Lock()
         self.threads = []
 
     def runner(self, op, **args):
@@ -64,7 +65,7 @@ class Gateway:
             item = self.store.request(arg(args, 'id', str))
             if not item or item['agent'] != agent:
                 raise Denied('not_found')
-            return self.public(item)
+            return self.public(item, owner=False)
         if op == 'job':
             job = self.store.job(arg(args, 'id', str))
             if not job or job['actor'] != agent:
@@ -146,7 +147,7 @@ class Gateway:
         else:
             detail = self.trigger_detail(agent, project, args)
         rid = self.store.create_request(agent, project, kind, detail)
-        return self.public(self.store.request(rid))
+        return self.public(self.store.request(rid), owner=False)
 
     @staticmethod
     def lifetime(args):
@@ -191,11 +192,16 @@ class Gateway:
         return {'identity': identity, 'service': service, 'config': config,
                 'signer': triggers.identity(config)}
 
-    def public(self, item):
+    def public(self, item, owner=True):
         detail = dict(item['detail'])
         if 'plan' in detail:
             plan = dict(detail['plan'])
             plan['env_set'] = sorted(plan.get('env_set') or {})  # values never leave the gateway
+            if not owner:
+                # The diff and the rendered risk list embed current file content and interpolated
+                # .env values; agents without `read` must not get them before the owner approves.
+                for key in ('diff', 'highlights'):
+                    plan.pop(key, None)
             detail['plan'] = plan
         return {'id': item['id'], 'kind': item['kind'], 'project': item['project'], 'agent': item['agent'],
                 'status': item['status'], 'created': item['created'], 'expires': item['expires'],
@@ -266,15 +272,17 @@ class Gateway:
 
     # Tailscale Serve ------------------------------------------------------
     def sync_serve(self):
-        dash = self.store.dashboard()
-        funnel = self.funnel and any(t['status'] == 'active' for t in dash['triggers'])
-        for attempt in ([funnel, False] if funnel else [False]):
-            try:
-                self.apply_serve(tailscale.serve_config(self.host, dash['routes'], attempt))
-                return 'applied' if attempt == funnel else 'applied_without_funnel'
-            except (OSError, ValueError) as exc:
-                print(f'Tailscale Serve configuration failed (funnel={attempt}): {exc}', flush=True)
-        return 'failed'
+        # One snapshot-to-apply critical section, so a stale snapshot never overwrites a newer one.
+        with self.serve_lock:
+            dash = self.store.dashboard()
+            funnel = self.funnel and any(t['status'] == 'active' for t in dash['triggers'])
+            for attempt in ([funnel, False] if funnel else [False]):
+                try:
+                    self.apply_serve(tailscale.serve_config(self.host, dash['routes'], attempt))
+                    return 'applied' if attempt == funnel else 'applied_without_funnel'
+                except (OSError, ValueError) as exc:
+                    print(f'Tailscale Serve configuration failed (funnel={attempt}): {exc}', flush=True)
+            return 'failed'
 
     # Triggers -------------------------------------------------------------
     def webhook(self, tid, body, signature, event):

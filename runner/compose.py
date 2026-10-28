@@ -19,8 +19,11 @@ def environment():
 
 
 def run(argv, timeout=120, check=True):
-    result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env=environment(), timeout=timeout)
+    try:
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=environment(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Denied('timeout', f'{argv[1] if len(argv) > 1 else "docker"} exceeded {timeout}s') from None
     if check and result.returncode:
         tail = result.stderr.decode('utf-8', 'replace').strip()[-2000:]
         raise Denied('docker_failed', tail)

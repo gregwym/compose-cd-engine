@@ -51,7 +51,7 @@ def serve_config(host, routes, funnel):
     tcp = {'443': {'HTTPS': True}}
     web = {f'{host}:443': {'Handlers': {'/': {'Proxy': f'http://127.0.0.1:{UI_PORT}'}}}}
     tcp['8443'] = {'HTTPS': True}
-    web[f'{host}:8443'] = {'Handlers': {'/hooks/': {'Proxy': f'http://127.0.0.1:{HOOK_PORT}'}}}
+    web[f'{host}:8443'] = {'Handlers': {'/hooks/': {'Proxy': f'http://127.0.0.1:{HOOK_PORT}/hooks/'}}}
     for route in routes:
         port = str(route['https_port'])
         tcp[port] = {'HTTPS': True}

@@ -19,13 +19,14 @@ def forbidden_source(source, deploy_root):
     path = normal(source)
     if not path.startswith('/'):
         return None
+    # Paths can come from interpolated .env values, so they stay out of the message.
     if path == '/' or path.endswith('docker.sock'):
-        return 'mounts ' + path
+        return 'mounts the host root or a Docker socket'
     if any(under(path, item) for item in SYSTEM):
-        return 'mounts system path ' + path
+        return 'mounts a system path'
     parts = path.split('/')
     if re.fullmatch(r'volume[0-9]+(USB[0-9]+)?', parts[1]) and (len(parts) == 2 or any(p.startswith('@') for p in parts[2:])):
-        return 'mounts volume root or system directory ' + path
+        return 'mounts a volume root or system directory'
     if deploy_root and under(path, deploy_root):
         return 'mounts the deployer directory'
     return None
@@ -37,8 +38,20 @@ def binds(service):
             yield item
 
 
+def volume_devices(config):
+    """Top-level named volumes backed by a host path through the local driver's options."""
+    for name, volume in sorted((config.get('volumes') or {}).items()):
+        device = ((volume or {}).get('driver_opts') or {}).get('device')
+        if isinstance(device, str) and device.startswith('/'):
+            yield name, device
+
+
 def violations(config, deploy_root):
     found = []
+    for name, device in volume_devices(config):
+        reason = forbidden_source(device, deploy_root)
+        if reason:
+            found.append(f'volume {name}: {reason}')
     for name, service in sorted((config.get('services') or {}).items()):
         if service.get('privileged'):
             found.append(f'{name}: privileged')
@@ -49,6 +62,8 @@ def violations(config, deploy_root):
                 found.append(f'{name}: {key}: host')
         if any('unconfined' in str(opt) for opt in service.get('security_opt') or []):
             found.append(f'{name}: unconfined security profile')
+        if service.get('use_api_socket'):
+            found.append(f'{name}: use_api_socket')  # Compose injects the Docker socket at create time
         if service.get('build'):
             found.append(f'{name}: build is not supported')
         for item in binds(service):
@@ -64,6 +79,9 @@ def violations(config, deploy_root):
 def highlights(config, working_dir):
     """Every reviewable risk of a configuration, as stable strings."""
     out = set()
+    for name, device in volume_devices(config):
+        if not under(normal(device), working_dir):
+            out.add(f'volume {name}: host path {normal(device)}')
     for name, service in (config.get('services') or {}).items():
         if service.get('network_mode') == 'host':
             out.add(f'{name}: host network')

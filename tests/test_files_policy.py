@@ -87,6 +87,20 @@ class HardPolicy(unittest.TestCase):
                        {'volumes': bind('/srv/../etc/shadow')}):
             self.assertTrue(self.violations(**fields), fields)
 
+    def test_api_socket_and_host_backed_volumes_are_rejected(self):
+        self.assertEqual(self.violations(use_api_socket=True), ['web: use_api_socket'])
+        for device in ('/', '/etc', '/volume1/docker/deployer/state'):
+            config = {'services': {'web': {}}, 'volumes': {'data': {
+                'driver': 'local', 'driver_opts': {'type': 'none', 'o': 'bind', 'device': device}}}}
+            self.assertTrue(policy.violations(config, '/volume1/docker/deployer'), device)
+        config['volumes']['data']['driver_opts']['device'] = '/volume1/media'
+        self.assertEqual(policy.violations(config, '/volume1/docker/deployer'), [])
+        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'volume data: host path /volume1/media'})
+
+    def test_violations_do_not_echo_paths(self):
+        found = policy.violations(service(volumes=[{'type': 'bind', 'source': '/etc/hunter2', 'target': '/x'}]), '')
+        self.assertNotIn('hunter2', ' '.join(found))
+
     def test_allowed(self):
         self.assertEqual(self.violations(network_mode='host', cap_add=['NET_ADMIN'],
                                          volumes=[{'type': 'bind', 'source': '/volume1/media', 'target': '/media'},
@@ -112,3 +126,72 @@ class Repositories(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ServeRouting(unittest.TestCase):
+    def test_hook_proxy_keeps_the_path_prefix(self):
+        from gateway import tailscale
+        config = tailscale.serve_config('h.ts.net', [], False)
+        self.assertEqual(config['Web']['h.ts.net:8443']['Handlers']['/hooks/']['Proxy'],
+                         f'http://127.0.0.1:{tailscale.HOOK_PORT}/hooks/')
+
+
+class TransactionalApply(unittest.TestCase):
+    """write_and_up with Docker replaced, to pin down recovery and stale handling."""
+    def setUp(self):
+        from unittest import mock
+        from runner import compose, server
+        self.compose, self.server, self.mock = compose, server, mock
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.wd = self.root / 'app'
+        self.wd.mkdir()
+        (self.wd / 'compose.yaml').write_bytes(b'old: 1\n')
+        self.runner = server.Runner(self.root, health_timeout=1)
+        self.identity = {'project': 'app', 'working_dir': str(self.wd), 'config_files': [str(self.wd / 'compose.yaml')]}
+        self.calls = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def plan(self, base=None):
+        return {'identity': self.identity, 'new': False, 'compose': 'new: 1\n', 'env_set': {}, 'env_unset': [],
+                'base': base or {'compose': server_sha(b'old: 1\n'), 'env': None}}
+
+    def fake(self, fail_first=None):
+        def compose(identity, *args, **kwargs):
+            self.calls.append(args)
+            if fail_first and len(self.calls) == 1:
+                raise fail_first
+        return compose
+
+    def test_timeout_rolls_back_files_and_restarts_without_pulling(self):
+        timeout = self.server.Denied('timeout', 'up exceeded 1800s')
+        with self.mock.patch.object(self.compose, 'compose', self.fake(timeout)), \
+                self.mock.patch.object(self.compose, 'wait_healthy'):
+            result = self.runner.write_and_up(self.plan())
+        self.assertEqual(result['status'], 'rolled_back')
+        self.assertEqual((self.wd / 'compose.yaml').read_bytes(), b'old: 1\n')
+        self.assertIn('--pull', self.calls[-1])
+        self.assertEqual(self.calls[-1][self.calls[-1].index('--pull') + 1], 'never')
+
+    def test_run_turns_subprocess_timeout_into_denied(self):
+        import subprocess
+        with self.mock.patch('subprocess.run', side_effect=subprocess.TimeoutExpired('docker', 1)):
+            with self.assertRaises(Denied) as caught:
+                self.compose.run(['docker', 'compose', 'up'], timeout=1)
+        self.assertEqual(caught.exception.code, 'timeout')
+
+    def test_edit_after_planning_is_stale_and_kept(self):
+        (self.wd / 'compose.yaml').write_bytes(b'edited by Container Manager\n')
+        with self.mock.patch.object(self.compose, 'compose', self.fake()):
+            with self.assertRaises(Denied) as caught:
+                self.runner.write_and_up(self.plan())
+        self.assertEqual(caught.exception.code, 'stale')
+        self.assertEqual((self.wd / 'compose.yaml').read_bytes(), b'edited by Container Manager\n')
+        self.assertEqual(self.calls, [])
+
+
+def server_sha(data):
+    from runner import server
+    return server.sha(data)

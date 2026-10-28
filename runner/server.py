@@ -145,7 +145,8 @@ class Runner:
     def recover(self, exc, restore, identity, services=()):
         try:
             restore()
-            compose.compose(identity, 'up', '-d', '--no-build', '--remove-orphans', *services)
+            # --pull never: the restored image id must decide what starts, even with pull_policy: always.
+            compose.compose(identity, 'up', '-d', '--no-build', '--pull', 'never', '--remove-orphans', *services)
             compose.wait_healthy(identity, self.health_timeout, services)
         except Denied as again:
             return {'status': 'failed', 'error': exc.code, 'detail': exc.detail,
@@ -230,6 +231,8 @@ class Runner:
             info = self.root.stat()
             os.chown(wd, info.st_uid, info.st_gid)
         old, old_env = files.read(path), files.read(env_path)
+        if not plan['new'] and (sha(old), sha(old_env)) != (plan['base']['compose'], plan['base']['env']):
+            raise Denied('stale', 'project files changed since approval')
         data = plan['compose'].encode()
         env = files.edit_env(old_env, plan['env_set'], plan['env_unset']) if (plan['env_set'] or plan['env_unset']) else old_env
         backups = [b for b in (files.backup(path, old) if data != old else None,
@@ -253,7 +256,10 @@ class Runner:
             if not plan['new']:
                 return self.recover(exc, restore, identity)
             # A new project has nothing to return to: stop it, keep its files for inspection.
-            compose.run(compose.base(identity) + ['down', '--remove-orphans'], timeout=600, check=False)
+            try:
+                compose.run(compose.base(identity) + ['down', '--remove-orphans'], timeout=600, check=False)
+            except Denied:
+                pass
             return {'status': 'failed', 'error': exc.code, 'detail': exc.detail}
         return {'status': 'success', 'backups': backups}
 

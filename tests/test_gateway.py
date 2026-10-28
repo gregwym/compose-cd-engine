@@ -108,6 +108,10 @@ class Gateway(unittest.TestCase):
         request = self.agent('request', kind='change', project='app', compose='services: {web: {}}\n',
                              env_set={'TOKEN': 'secret-value'})
         self.assertEqual(request['detail']['plan']['env_set'], ['TOKEN'])
+        for key in ('diff', 'highlights'):  # previews for agents carry no file content or interpolated values
+            self.assertNotIn(key, request['detail']['plan'])
+            self.assertNotIn(key, self.agent('request_status', id=request['id'])['detail']['plan'])
+        self.assertIn('diff', self.stack.browser.request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
         status, page = self.stack.browser.request('GET', '/api/request/' + request['id'])
         self.assertNotIn('secret-value', json.dumps(page))
         decided = self.stack.approve(request)
