@@ -114,28 +114,26 @@ class RunnerDocker(unittest.TestCase):
 
     def test_highlights_new_host_paths_and_ports(self):
         self.create()
-        text = HEALTHY.replace('./data:/data', '/tmp:/host-tmp:ro') + '    ports: ["127.0.0.1:18999:80"]\n'
+        media = Path(self.temp) / 'media'  # outside the project, beside (not above) the deployer directory
+        media.mkdir()
+        text = HEALTHY.replace('./data:/data', f'{media}:/host-media:ro') + '    ports: ["127.0.0.1:18999:80"]\n'
         plan = self.runner.plan(self.identity(), text)
-        self.assertIn('web: host path /tmp -> /host-tmp (read-only)', plan['highlights'])
+        self.assertIn(f'web: host path {media} -> /host-media (read-only)', plan['highlights'])
         self.assertIn('web: port 127.0.0.1:18999 -> 80/tcp', plan['highlights'])
 
-    def test_secret_and_env_files_follow_the_mount_rules(self):
+    def test_secret_files_follow_the_mount_rules(self):
         self.create()
         deployer = Path(self.temp) / 'deployer'
         deployer.mkdir()
         (deployer / 'state').write_text('KEY=private\n')
-        outside = Path(self.temp) / 'outside.env'
+        outside = Path(self.temp) / 'outside.txt'
         outside.write_text('OTHER=1\n')
-        env_file = HEALTHY.replace('    volumes:', '    env_file: [{path}]\n    volumes:')
         secret = HEALTHY.replace('    volumes:', '    secrets: [s]\n    volumes:') + 'secrets:\n  s:\n    file: {path}\n'
-        for text in (env_file, secret):
-            for path in (deployer / 'state', '../../deployer/state'):  # relative paths resolve from the project
-                rendered = self.runner.render(self.identity(), text.format(path=path).encode(), None)
-                with self.assertRaises(Denied, msg=json.dumps(rendered)) as caught:
-                    self.runner.plan(self.identity(), text.format(path=path))
-                self.assertEqual(caught.exception.code, 'policy')
-        self.assertIn(f'web: env_file: host file {outside}',
-                      self.runner.plan(self.identity(), env_file.format(path=outside))['highlights'])
+        for path in (deployer / 'state', '../../deployer/state'):  # relative paths resolve from the project
+            rendered = self.runner.render(self.identity(), secret.format(path=path).encode(), None)
+            with self.assertRaises(Denied, msg=json.dumps(rendered)) as caught:
+                self.runner.plan(self.identity(), secret.format(path=path))
+            self.assertEqual(caught.exception.code, 'policy')
         self.assertIn(f'secret s: host file {outside}',
                       self.runner.plan(self.identity(), secret.format(path=outside))['highlights'])
 

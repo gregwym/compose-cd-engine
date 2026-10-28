@@ -9,6 +9,7 @@ MAX_FILE = 256 * 1024
 KEEP_BACKUPS = 5
 KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 PLAIN = re.compile(r'[A-Za-z0-9_./:@+,=%-]*')
+ASSIGN = re.compile(r'\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$')
 
 
 def read(path):
@@ -24,6 +25,16 @@ def read(path):
     return data
 
 
+def write_all(fd, data):
+    """os.write may write less than asked without raising; anything short of all of it is an error."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError('short write')
+        view = view[written:]
+
+
 def write_in_place(path, data, like=None, mode=0o600):
     """Overwrite an existing file without replacing its inode, so the owner,
     mode and Synology ACL stay. A new file copies ownership from `like`."""
@@ -37,7 +48,7 @@ def write_in_place(path, data, like=None, mode=0o600):
             info = os.stat(like)
             os.fchown(fd, info.st_uid, info.st_gid)
     try:
-        os.write(fd, data)
+        write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -65,7 +76,7 @@ def backup(path, data):
     try:
         os.fchmod(fd, info.st_mode & 0o777)
         os.fchown(fd, info.st_uid, info.st_gid)
-        os.write(fd, data)
+        write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -75,12 +86,42 @@ def backup(path, data):
     return target.name
 
 
+def closed(rest, quote):
+    if quote == "'":
+        return "'" in rest
+    escaped = False
+    for char in rest:
+        if escaped:
+            escaped = False
+        elif char == '\\':
+            escaped = True
+        elif char == '"':
+            return True
+    return False
+
+
+def entries(text):
+    """Logical .env entries as (key or None, text). Quoted values may span lines, as Compose allows,
+    so assignment-looking lines inside them belong to the value."""
+    lines, out, i = text.splitlines(), [], 0
+    while i < len(lines):
+        match = ASSIGN.match(lines[i])
+        end = i
+        if match and match.group(2)[:1] in ('"', "'"):
+            quote, rest = match.group(2)[0], match.group(2)[1:]
+            while not closed(rest, quote) and end + 1 < len(lines):
+                end += 1
+                rest += '\n' + lines[end]
+        out.append((match.group(1) if match else None, '\n'.join(lines[i:end + 1])))
+        i = end + 1
+    return out
+
+
 def env_keys(data):
     keys = []
-    for line in (data or b'').decode('utf-8', 'replace').splitlines():
-        match = re.match(r'\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=', line)
-        if match and match.group(1) not in keys:
-            keys.append(match.group(1))
+    for key, _ in entries((data or b'').decode('utf-8', 'replace')):
+        if key and key not in keys:
+            keys.append(key)
     return keys
 
 
@@ -103,11 +144,8 @@ def edit_env(data, set_values=None, unset=()):
             raise Denied('invalid_env_key', key if isinstance(key, str) else None)
     if set(set_values) & set(unset):
         raise Denied('invalid_env_change', 'key both set and unset')
-    lines = (data or b'').decode('utf-8').splitlines()
     out, done = [], set()
-    for line in lines:
-        match = re.match(r'\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=', line)
-        key = match.group(1) if match else None
+    for key, line in entries((data or b'').decode('utf-8')):
         if key in unset:
             continue
         if key in set_values:
@@ -124,12 +162,7 @@ def edit_env(data, set_values=None, unset=()):
 
 def env_summary(before, after):
     def parse(data):
-        values = {}
-        for line in (data or b'').decode('utf-8', 'replace').splitlines():
-            match = re.match(r'\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$', line)
-            if match:
-                values[match.group(1)] = match.group(2)
-        return values
+        return {key: text for key, text in entries((data or b'').decode('utf-8', 'replace')) if key}
     old, new = parse(before), parse(after)
     return {'added': sorted(set(new) - set(old)), 'removed': sorted(set(old) - set(new)),
             'changed': sorted(k for k in set(old) & set(new) if old[k] != new[k])}

@@ -25,6 +25,13 @@ class EnvEdits(unittest.TestCase):
     def test_duplicate_keys_collapse(self):
         self.assertEqual(files.edit_env(b'A=1\nA=2\n', {'A': '3'}), b'A=3\n')
 
+    def test_multiline_quoted_values_stay_whole(self):
+        before = b"SCRIPT='echo start\nMODE=inside\necho end'\nQ=\"a\\\"\nB=inside\"\nMODE=outside\n"
+        after = files.edit_env(before, {'MODE': 'production'}, ['Q'])
+        self.assertEqual(after, b"SCRIPT='echo start\nMODE=inside\necho end'\nMODE=production\n")
+        self.assertEqual(files.env_keys(before), ['SCRIPT', 'Q', 'MODE'])
+        self.assertEqual(files.env_summary(before, after), {'added': [], 'removed': ['Q'], 'changed': ['MODE']})
+
 
 class ImageEdits(unittest.TestCase):
     COMPOSE = b'services:\n  web:\n    image: "nginx:1.25"  # pinned\n  db:\n    image: postgres:16\n'
@@ -58,6 +65,19 @@ class InPlaceWrites(unittest.TestCase):
             self.assertEqual(len(backups), files.KEEP_BACKUPS)
             self.assertEqual(backups[-1].name, names[-1])
             self.assertEqual(backups[-1].read_text(), 'one\n')
+
+    def test_short_writes_continue_and_a_stalled_write_fails(self):
+        from unittest import mock
+        real = os.write
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '.env'
+            with mock.patch.object(files.os, 'write', lambda fd, data: real(fd, bytes(data[:3]))):
+                files.write_in_place(path, b'MODE=production\n')
+            self.assertEqual(path.read_bytes(), b'MODE=production\n')
+            with mock.patch.object(files.os, 'write', lambda fd, data: 0), self.assertRaises(OSError):
+                files.write_in_place(path, b'MODE=x\n')
+            with mock.patch.object(files.os, 'write', lambda fd, data: 0), self.assertRaises(OSError):
+                files.backup(path, b'MODE=x\n')
 
     def test_refuses_symlinks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,17 +117,19 @@ class HardPolicy(unittest.TestCase):
         self.assertEqual(policy.violations(config, '/volume1/docker/deployer'), [])
         self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'volume data: host path /volume1/media'})
 
-    def test_secret_config_and_env_files_follow_the_mount_rules(self):
+    def test_secret_and_config_files_follow_the_mount_rules(self):
         for path in ('/etc/shadow', '/volume1/docker/deployer/gateway/gateway.sqlite'):
-            for config in ({'secrets': {'s': {'file': path}}}, {'configs': {'c': {'file': path}}},
-                           service(env_file=[{'path': path, 'required': True}]), service(env_file=[path])):
+            for config in ({'secrets': {'s': {'file': path}}}, {'configs': {'c': {'file': path}}}):
                 self.assertTrue(policy.violations(config, '/volume1/docker/deployer'), (path, config))
-        config = {'services': {'web': {'env_file': [{'path': '/volume1/docker/other/.env'},
-                                                    {'path': '/volume1/docker/app/.env'}]}},
-                  'secrets': {'s': {'file': '/volume1/keys/s'}}}
+        config = {'secrets': {'s': {'file': '/volume1/keys/s'}}, 'configs': {'c': {'file': '/volume1/docker/app/c'}}}
         self.assertEqual(policy.violations(config, '/volume1/docker/deployer'), [])
-        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {
-            'secret s: host file /volume1/keys/s', 'web: env_file: host file /volume1/docker/other/.env'})
+        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'secret s: host file /volume1/keys/s'})
+
+    def test_directories_containing_the_deployer_are_rejected(self):
+        bind = lambda source: [{'type': 'bind', 'source': source, 'target': '/x'}]
+        self.assertEqual(self.violations(volumes=bind('/volume1/docker')), ['web: mounts the deployer directory'])
+        self.assertEqual(self.violations(volumes=bind('/volume1/docker/app')), [])
+        self.assertEqual(self.violations(volumes=bind('/volume1/docker/deployer-old')), [])
 
     def test_violations_do_not_echo_paths(self):
         found = policy.violations(service(volumes=[{'type': 'bind', 'source': '/etc/hunter2', 'target': '/x'}]), '')

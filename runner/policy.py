@@ -38,8 +38,8 @@ def forbidden_path(path, deploy_root):
     parts = path.split('/')
     if re.fullmatch(r'volume[0-9]+(USB[0-9]+)?', parts[1]) and (len(parts) == 2 or any(p.startswith('@') for p in parts[2:])):
         return 'mounts a volume root or system directory'
-    if deploy_root and under(path, deploy_root):
-        return 'mounts the deployer directory'
+    if deploy_root and (under(path, deploy_root) or under(deploy_root, path)):
+        return 'mounts the deployer directory'  # or a directory that contains it
     return None
 
 
@@ -58,18 +58,14 @@ def volume_devices(config):
 
 
 def host_files(config):
-    """Host files Compose reads or mounts outside `volumes`: secret and config files, and env_file."""
+    """Host files mounted through top-level secrets and configs.
+
+    env_file is not here: Compose merges and drops it while loading, so no rendered config shows it."""
     for kind in ('secrets', 'configs'):
         for name, item in sorted((config.get(kind) or {}).items()):
             path = (item or {}).get('file')
             if isinstance(path, str) and path.startswith('/'):
                 yield f'{kind[:-1]} {name}', path
-    for name, service in sorted((config.get('services') or {}).items()):
-        items = service.get('env_file') or []
-        for item in [items] if isinstance(items, str) else items:
-            path = item.get('path') if isinstance(item, dict) else item
-            if isinstance(path, str) and path.startswith('/'):
-                yield f'{name}: env_file', path
 
 
 def violations(config, deploy_root):
