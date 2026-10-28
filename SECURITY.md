@@ -29,8 +29,9 @@
 - Bind and file sources are also checked after resolving symlinks, but only where the runner can
   see them (`PROJECTS_ROOT`). Elsewhere a host symlink to a forbidden path cannot be detected; such
   sources are highlighted with "symlinks not checked".
-- Compose error output returned to agents has `.env` values of four or more characters replaced
-  with `***`; shorter values are not scrubbed.
+- A change preview that Compose rejects returns no Compose output, since an agent could put any
+  existing `.env` value into an invalid field. Errors from approved operations are returned with
+  `.env` values of four or more characters replaced by `***`; this is best effort.
 - Logs are returned to paired agents unredacted; applications that log secrets expose them.
 - Restoring an old `state/gateway` backup can bring back revoked grants.
 - Not independently audited.

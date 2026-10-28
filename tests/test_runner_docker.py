@@ -112,6 +112,13 @@ class RunnerDocker(unittest.TestCase):
                 self.runner.plan(self.identity(), text)
             self.assertEqual(caught.exception.code, 'policy')
 
+    def test_preview_errors_do_not_echo_env_values(self):
+        self.create(env={'SECRET': 'hunter2-value'})
+        with self.assertRaises(Denied) as caught:
+            self.runner.plan(self.identity(), HEALTHY + '    ports: ["${SECRET}:80"]\n')
+        self.assertEqual(caught.exception.code, 'invalid_compose')
+        self.assertNotIn('hunter2', json.dumps([caught.exception.code, caught.exception.detail]))
+
     def test_highlights_new_host_paths_and_ports(self):
         self.create()
         media = Path(self.temp) / 'media'  # outside the project, beside (not above) the deployer directory

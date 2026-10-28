@@ -86,18 +86,17 @@ def backup(path, data):
     return target.name
 
 
-def closed(rest, quote):
-    if quote == "'":
-        return "'" in rest
+def closing(rest, quote):
+    """Index of the unescaped closing quote in `rest`, or -1. Compose skips escaped quotes of both kinds."""
     escaped = False
-    for char in rest:
+    for index, char in enumerate(rest):
         if escaped:
             escaped = False
         elif char == '\\':
             escaped = True
-        elif char == '"':
-            return True
-    return False
+        elif char == quote:
+            return index
+    return -1
 
 
 def entries(text):
@@ -109,7 +108,7 @@ def entries(text):
         end = i
         if match and match.group(2)[:1] in ('"', "'"):
             quote, rest = match.group(2)[0], match.group(2)[1:]
-            while not closed(rest, quote) and end + 1 < len(lines):
+            while closing(rest, quote) < 0 and end + 1 < len(lines):
                 end += 1
                 rest += '\n' + lines[end]
         out.append((match.group(1) if match else None, '\n'.join(lines[i:end + 1])))
@@ -123,8 +122,11 @@ def env_values(data):
     for key, text in entries((data or b'').decode('utf-8', 'replace')):
         if key:
             value = text.split('=', 1)[1].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-                value = value[1:-1]
+            if value[:1] in ('"', "'"):
+                end = closing(value[1:], value[0])
+                value = value[1:end + 1] if end >= 0 else value[1:]
+            else:
+                value = re.split(r'\s#', value, maxsplit=1)[0].rstrip()  # an inline comment is not part of it
             values.add(value)
     return values
 

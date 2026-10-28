@@ -192,7 +192,14 @@ class Runner:
                 before = compose.render(identity)
             except Denied:
                 before = None
-        after = self.render(identity, data, new_env)
+        try:
+            after = self.render(identity, data, new_env)
+        except Denied as exc:
+            if exc.code != 'docker_failed':
+                raise
+            # Compose quotes interpolated .env values in its errors, and agents can put any of them
+            # into an invalid field before approval; scrubbing cannot follow every dotenv rule.
+            raise Denied('invalid_compose', 'docker compose config rejected the file') from None
         found = policy.violations(after, self.deploy_root)
         if found:
             raise Denied('policy', found)

@@ -61,6 +61,17 @@ class Triggers(unittest.TestCase):
         self.assertIn('https://github.com/owner/app/.github/workflows/docker.yml@refs/heads/main', calls[0])
         self.assertEqual(calls[0][-1], 'ghcr.io/owner/app@sha256:' + 'i' * 64)
 
+    def test_cosign_timeout_is_a_refusal(self):
+        def run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 180)
+        with mock.patch.object(triggers, 'github', self.github), \
+                mock.patch('shared.registry.auth', return_value='t'), \
+                mock.patch('shared.registry.manifest', return_value=({}, 'sha256:' + 'i' * 64)), \
+                mock.patch('subprocess.run', run):
+            with self.assertRaises(Denied) as caught:
+                triggers.latest(CONFIG)
+        self.assertEqual(caught.exception.code, 'signature_timeout')
+
     def test_unsigned_or_wrong_revision_is_refused(self):
         def run(argv, **kwargs):
             return subprocess.CompletedProcess(argv, 1, b'', b'no signatures')

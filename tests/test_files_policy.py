@@ -25,6 +25,16 @@ class EnvEdits(unittest.TestCase):
     def test_duplicate_keys_collapse(self):
         self.assertEqual(files.edit_env(b'A=1\nA=2\n', {'A': '3'}), b'A=3\n')
 
+    def test_escaped_single_quotes_do_not_end_a_value(self):
+        before = b"SCRIPT='echo Let\\'s go\nMODE=inside\necho end'\nMODE=outside\n"
+        after = files.edit_env(before, {'MODE': 'production'})
+        self.assertEqual(after, b"SCRIPT='echo Let\\'s go\nMODE=inside\necho end'\nMODE=production\n")
+        self.assertEqual(files.env_summary(before, after), {'added': [], 'removed': [], 'changed': ['MODE']})
+
+    def test_values_for_scrubbing_drop_quotes_and_inline_comments(self):
+        data = b"A=hunter2-value # comment\nB='quoted value' # note\nC=\"x#y\"\n"
+        self.assertEqual(files.env_values(data), {'hunter2-value', 'quoted value', 'x#y'})
+
     def test_multiline_quoted_values_stay_whole(self):
         before = b"SCRIPT='echo start\nMODE=inside\necho end'\nQ=\"a\\\"\nB=inside\"\nMODE=outside\n"
         after = files.edit_env(before, {'MODE': 'production'}, ['Q'])

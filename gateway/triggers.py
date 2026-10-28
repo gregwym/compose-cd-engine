@@ -52,9 +52,12 @@ def latest(config):
         raise Denied('github_unavailable')
     image = config['image']
     _, index = registry.manifest(image, 'sha-' + commit, registry.auth(image))
-    result = subprocess.run([COSIGN, 'verify', '--certificate-identity', identity(config),
-                             '--certificate-oidc-issuer', ISSUER, f'{image}@{index}'],
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=180)
+    try:
+        result = subprocess.run([COSIGN, 'verify', '--certificate-identity', identity(config),
+                                 '--certificate-oidc-issuer', ISSUER, f'{image}@{index}'],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=180)
+    except subprocess.TimeoutExpired:
+        raise Denied('signature_timeout') from None  # a per-trigger failure, not the end of the polling pass
     if result.returncode:
         raise Denied('signature_invalid', result.stderr.decode('utf-8', 'replace')[-500:])
     digest, manifest = registry.resolve(image, index, config['platform'])
