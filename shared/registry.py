@@ -67,3 +67,14 @@ def config_document(image, manifest_doc):
     if 'sha256:'+hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError('config digest mismatch')
     return json.loads(raw)
+
+
+def repository(ref):
+    """Canonical repository of an image reference, without tag or digest."""
+    name = ref.split('@', 1)[0]
+    head, _, tail = name.rpartition('/')
+    name = (head + '/' if head else '') + tail.split(':', 1)[0]
+    first = name.split('/', 1)[0]
+    if '/' not in name or ('.' not in first and ':' not in first and first != 'localhost'):
+        name = 'docker.io/' + (name if '/' in name else 'library/' + name)
+    return name

@@ -1,3 +1,7 @@
+# NAS Compose deployer for Synology Container Manager. See docs/synology.zh-CN.md.
+# Put a .env next to this file with at least:
+#   DEPLOY_ROOT=/volume1/docker/deployer
+#   PROJECTS_ROOT=/volume1/docker
 name: compose-deployer
 
 x-engine: &engine
@@ -6,279 +10,67 @@ x-engine: &engine
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
+  tmpfs: ['/tmp:size=64m,nosuid,nodev']
   logging:
     driver: json-file
-    options: {max-size: 2m, max-file: '2'}
-  depends_on:
-    init: {condition: service_completed_successfully}
-  tmpfs: ['/tmp:size=32m,noexec,nosuid,nodev']
+    options: {max-size: 2m, max-file: '3'}
 
 services:
-  init:
-    <<: *engine
-    restart: 'no'
-    depends_on: {}
-    command: [python3, -m, installer.initialize]
-    environment:
-      DEPLOY_ROOT: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}
-    user: '0:0'
-    network_mode: none
-    cap_add: [CHOWN]
-    mem_limit: 64m
-    pids_limit: 16
-    volumes:
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}
-        target: /install
-        bind: {create_host_path: false}
-
   tailscale:
     image: tailscale/tailscale:stable
     hostname: deployer
     restart: unless-stopped
-    user: '0:0'
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    mem_limit: 256m
-    pids_limit: 128
-    depends_on:
-      init: {condition: service_completed_successfully}
     environment:
       TS_HOSTNAME: deployer
       TS_USERSPACE: 'true'
       TS_AUTH_ONCE: 'true'
       TS_STATE_DIR: /var/lib/tailscale
       TS_SOCKET: /var/run/tailscale/tailscaled.sock
-      TS_SERVE_CONFIG: /config/serve.json
+    # Approved Serve routes reach applications through their published host ports.
+    extra_hosts: ['host.docker.internal:host-gateway']
     volumes:
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/tailscale
-        target: /var/lib/tailscale
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/tailscale
-        target: /var/run/tailscale
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/tailscale
-        target: /config
-        read_only: true
-        bind: {create_host_path: true}
+      - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/state/tailscale:/var/lib/tailscale
+      - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/run/tailscale:/var/run/tailscale
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     logging:
       driver: json-file
-      options: {max-size: 2m, max-file: '2'}
+      options: {max-size: 2m, max-file: '3'}
 
-  configure:
+  gateway:
     <<: *engine
-    command: [python3, -m, installer.configure]
+    command: [python3, -m, gateway.server]
+    # Root without capabilities: owns only its own state directory and the Tailscale LocalAPI.
     user: '0:0'
-    network_mode: none
-    mem_limit: 64m
-    pids_limit: 16
-    volumes:
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/tailscale
-        target: /tailscale
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/approval
-        target: /etc/compose-cd/approval
-        bind: {create_host_path: true}
-    healthcheck:
-      test: [CMD, python3, -m, installer.health, configure]
-      interval: 30s
-      timeout: 15s
-      retries: 3
-      start_period: 10m
-
-  approval:
-    <<: *engine
-    command: [python3, -m, authorization.server, --listen, 127.0.0.1, --wait-policy, --first-enrollment-console]
-    user: '10004:30004'
     network_mode: service:tailscale
-    depends_on:
-      init: {condition: service_completed_successfully}
-      tailscale: {condition: service_started, restart: true}
-    mem_limit: 96m
-    pids_limit: 32
+    depends_on: [tailscale, runner]
+    environment:
+      HOME: /tmp
+      CD_FUNNEL: ${CD_FUNNEL:-0}
     volumes:
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/approval
-        target: /etc/compose-cd/approval
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/approval
-        target: /var/lib/compose-cd-approval
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/approval
-        target: /run/compose-cd-approval
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/approval-service
-        target: /etc/compose-cd/service-keys/approval-service
-        read_only: true
-        bind: {create_host_path: true}
-    healthcheck:
-      test: [CMD, python3, -m, installer.health, approval]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10m
-
-  management:
-    <<: *engine
-    command: [python3, -m, management.gateway, --listen, 127.0.0.1]
-    user: '10001:10001'
-    group_add: ['30002', '30003']
-    network_mode: service:tailscale
-    depends_on:
-      init: {condition: service_completed_successfully}
-      tailscale: {condition: service_started, restart: true}
-    mem_limit: 64m
-    pids_limit: 32
-    volumes:
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/management
-        target: /etc/compose-cd/management
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/management
-        target: /etc/compose-cd/service-keys/management
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/agent-keys
-        target: /etc/compose-cd/agent-keys
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/management
-        target: /run/compose-cd-management
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/management
-        target: /var/lib/compose-cd-management
-        bind: {create_host_path: true}
-    healthcheck:
-      test: [CMD, python3, -m, installer.health, management]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/state/gateway:/var/lib/compose-cd/gateway
+      - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/run/tailscale:/var/run/tailscale
+      - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/run/runner:/run/compose-cd
 
   runner:
     <<: *engine
-    command: [python3, /app/runner/runner.py]
+    command: [python3, -m, runner.server]
     user: '0:0'
-    group_add: ['30002', '30004', '30005']
     network_mode: none
-    cap_add: [CHOWN]
-    mem_limit: 128m
-    pids_limit: 64
+    # Writes Container Manager project files in place, keeping their owners.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     environment:
-      CD_AUTHORIZATION_REQUIRED: '1'
-      CD_DEPLOYER_POLICY: /etc/compose-cd/provisioning/policy.json
-      CD_MANAGEMENT_GID: '30003'
-      CD_TARGETS_DIR: /etc/compose-cd/targets
-      CD_STATE_DIR: /var/lib/compose-cd/state
-      DOCKER_HOST: unix:///var/run/docker.sock
+      HOME: /tmp
+      DEPLOY_ROOT: ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}
+      PROJECTS_ROOT: ${PROJECTS_ROOT:-/volume1/docker}
+      CD_HEALTH_TIMEOUT: ${CD_HEALTH_TIMEOUT:-120}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/targets
-        target: /etc/compose-cd/targets
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/provisioning
-        target: /etc/compose-cd/provisioning
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/agent-keys
-        target: /etc/compose-cd/agent-keys
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/approval-service
-        target: /etc/compose-cd/service-keys/approval-service
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/verification-service
-        target: /etc/compose-cd/service-keys/verification-service
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/approval
-        target: /run/compose-cd-approval
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/verification
-        target: /run/compose-cd-verification
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/management
-        target: /run/compose-cd-management
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/runner
-        target: /var/lib/compose-cd/state
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/workspace
-        target: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/workspace
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/config
-        target: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/config
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/downloads
-        target: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/apps/downloads
-        bind: {create_host_path: true}
-    healthcheck:
-      test: [CMD, python3, -m, installer.health, runner]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  project-verifier:
-    <<: *engine
-    command: [python3, -m, verifier.provisioning]
-    user: '10005:30005'
-    mem_limit: 192m
-    pids_limit: 48
-    environment:
-      CD_PROVISIONER_VERIFY_POLICY: /etc/compose-cd/provisioning/policy.json
-      HOME: /tmp
-    volumes:
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/provisioning
-        target: /etc/compose-cd/provisioning
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/config/service-keys/verification-service
-        target: /etc/compose-cd/service-keys/verification-service
-        read_only: true
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/runtime/verification
-        target: /run/compose-cd-verification
-        bind: {create_host_path: true}
-      - type: bind
-        source: ${DEPLOY_ROOT:?Set DEPLOY_ROOT to the absolute project directory}/state/verification
-        target: /var/lib/compose-cd-verification
-        bind: {create_host_path: true}
-    healthcheck:
-      test: [CMD, python3, -m, installer.health, project-verifier]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      # Same path inside and outside, so Compose labels and relative mounts match Container Manager.
+      - ${PROJECTS_ROOT:-/volume1/docker}:${PROJECTS_ROOT:-/volume1/docker}
+      # Empty over the deployer's own directory: env_file, include and extends are read here while
+      # rendering, and the policy cannot see their sources, so deployer state must not be readable.
+      - type: tmpfs
+        target: ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}
+        tmpfs: {size: 65536}
+      - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/run/runner:/run/compose-cd

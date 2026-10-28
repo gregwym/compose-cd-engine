@@ -1,48 +1,43 @@
 # Security
 
-## Agent-native authorization
+## Trust boundaries
 
-The opt-in [v2 authorization model](docs/agent-authorization.md) separates agent
-HMAC identities, administrator Passkeys and private Runner service credentials.
-Only the trusted approval service issues/revokes grants, after transaction-bound
-WebAuthn user verification or an explicitly administrator-preauthorized sandbox.
-It never mounts Docker or application data. The Runner independently enforces
-policy/grants at execution; enabling v2 rejects legacy project bypasses. Legacy
-fixed targets require explicit disjoint administrator compatibility authorization.
+- **runner** holds the Docker socket, which is equivalent to root on the NAS. It has
+  no network and talks only to the gateway over a root-only unix socket. On every
+  call it re-checks the project's Container Manager identity, the file hashes that
+  were approved, and the hard policy in [design §6](docs/design.md#6-硬策略runner-独立执行).
+- **gateway** has no Docker socket and no project files. It holds the only database
+  (Passkeys, paired agent keys, requests, grants, jobs, triggers, audit). It decides
+  who may act. If it is compromised, an attacker can operate projects within the
+  runner's hard policy, but cannot mount the Docker socket, system paths or the
+  deployer directory, or run privileged containers.
+- **agents** hold only an Ed25519 private key. Requests are signed, bound to the
+  gateway's name, time-limited and single-use.
+- Each owner decision is its own WebAuthn assertion with user verification,
+  bound to a hash of the exact request row; a changed request cannot be approved
+  with an old ceremony.
 
-Do not share service keys, local enrollment tokens, administrator sessions or
-authorization SQLite files with agents. Restoring stale authorization backups
-can resurrect revoked privileges; disable execution and reconcile revocations
-before accepting a restore. Signed code with data access is still dangerous;
-Docker socket access remains host-admin-equivalent. CI software authenticators
-do not prove real iPhone, DSM ACL or production network compatibility.
+## Known limits
 
-Report vulnerabilities privately via GitHub Security Advisories for this repository
-when available; do not put credentials, host inventory or exploitable production
-configuration in public issues. This early-stage engine has not received an
-independent security audit. Only the current main development line is maintained;
-there is no stable/LTS promise yet.
+- An approved application image can still do whatever its own mounts and network allow.
+- `network_mode: host`, extra capabilities, devices and host paths outside the project
+  are allowed after review; read the highlighted items before approving.
+- `env_file`, `include` and `extends.file` are read by the runner's Compose while rendering and
+  are gone from the rendered configuration, so the hard policy cannot check their sources. The
+  runner sees the deployer directory only as an empty tmpfs, so deployer state cannot be read this
+  way, but other projects' files under `PROJECTS_ROOT` can; review those lines in the diff.
+- Bind and file sources are also checked after resolving symlinks, but only where the runner can
+  see them (`PROJECTS_ROOT`). Elsewhere a host symlink to a forbidden path cannot be detected; such
+  sources are highlighted with "symlinks not checked".
+- A change preview that Compose rejects returns no Compose output, since an agent could put any
+  existing `.env` value into an invalid field. Errors from approved operations are returned with
+  `.env` values of four or more characters replaced by `***`; this is best effort.
+- Logs are returned to paired agents unredacted; applications that log secrets expose them.
+- Restoring an old `state/gateway` backup can bring back revoked grants.
+- Not independently audited.
 
-Trust boundaries are described in README. The root runner has host-admin-equivalent
-Docker access; network isolation does not reduce Docker socket authority. Anyone
-who can edit local policies or the host daemon is trusted. Public application CI
-may build/sign an image, but cannot choose host paths or arbitrary deployment
-commands. HMAC is a wake-up authentication mechanism, not the sole approval for an
-image. Signature provenance is checked independently against fixed source policy.
+## Reporting
 
-Keep secrets, policies, transport SSH keys, state and logs outside this repository
-and image build context. Pin engine image digests after verifying the exact
-workflow signing identity. Dependencies and Actions are pinned, not automatically
-trusted forever. The bounded public-tree check is not a comprehensive secret scan.
-
-## Optional management API
-
-See [NAS trust boundaries and installation](docs/nas-management.md). Management
-requests carry no Docker arguments, paths, image names, service selectors or shell.
-The unprivileged HTTPS entrypoint and privileged action broker enforce independent
-project/action allowlists. Nonce stores persist across restarts; never disable TLS
-or expose this endpoint publicly. Raw log messages are withheld rather than
-claimed safe through incomplete redaction. A compromised Runner still has full
-Docker authority; a signed app image can access all app-granted data/networks.
-NAS snapshots/backups and administrator recovery acknowledgements are not agent
-operations. Pilot management targets disable tar snapshots and automatic rollback.
+Report vulnerabilities privately through GitHub Security Advisories for this
+repository. Do not post credentials, host inventory or private configuration in
+public issues.

@@ -23,18 +23,11 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.txt
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app
-COPY receiver/ receiver/
-COPY verifier/ verifier/
-COPY runner/ runner/
 COPY shared/ shared/
-COPY management/ management/
-COPY deployer/ deployer/
-COPY authorization/ authorization/
-COPY installer/ installer/
-COPY app_ingress/ app_ingress/
-COPY scripts/agent.py scripts/app_ingress.py scripts/task_delegation.py /app/scripts/
+COPY runner/ runner/
+COPY gateway/ gateway/
+COPY client/ client/
 RUN chmod -R a+rX /app
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/compose-cd-engine/
 COPY third_party/ /usr/share/doc/compose-cd-engine/third_party/
-USER 10001:10001
-CMD ["python3", "receiver/receiver.py", "--container"]
+CMD ["python3", "-m", "gateway.server"]
