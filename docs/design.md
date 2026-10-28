@@ -41,12 +41,12 @@ iPhone ── Passkey ───────┤
 
 1. **项目身份来自容器标签**：`com.docker.compose.project`、`.project.working_dir`、`.project.config_files`。runner 永远以
    `docker compose -p <name> --project-directory <working_dir> -f <config_files...>` 执行，不改名、不搬目录、不生成替代配置文件、不追加 override 文件。执行后标签不变。
-2. **原地修改**：变更写回原 `compose.yaml` / `.env`，保持 inode、属主、权限（因此保留 Synology ACL）。写前在同目录生成 `compose.yaml.bak-<UTC时间>`，保留最近 5 份。
+2. **原地修改**：变更写回原 `compose.yaml` / `.env`，保持 inode、属主、权限（因此保留 Synology ACL）。写前在同目录生成 `compose.yaml.bak-<UTC时间>`（`.env` 同理），保留最近 5 份。
 3. **`.env` 按 Compose 标准读取**（项目目录下），与 CM 行为一致。runner 以干净环境变量运行 compose，避免自身环境变量参与插值。
 4. **操作语义对应 CM 按钮**：start=`start`，stop=`stop`，restart=`restart`，up=`up -d`，update=`pull` + `up -d`，down=`down`（不带 `-v`）。
 5. **并发**：CM 可能同时被人操作。所有写操作在执行前比对批准时记录的 `compose.yaml`/`.env` hash；不一致即拒绝（`stale`），绝不覆盖 CM 里的修改。
 6. **新建项目**放在 `PROJECTS_ROOT/<name>/compose.yaml`（默认 `/volume1/docker`，即 CM 默认位置）。CM 是否自动列出命令行创建的项目需 DSM 实机确认；若不列出，在 CM 中"新增 → 使用现有 compose.yaml"指向该目录一次即可，之后两边一致。
-7. **语法兼容**：runner 内置的 Compose 可能比 CM 自带的新。agent 写入的 yaml 应只用常见语法；DSM 实机验收需覆盖。
+7. **语法兼容**：runner 内置 Compose v2.40，可能比 CM 自带的新。agent 写入的 yaml 应只用常见语法；DSM 实机验收需覆盖。
 
 可管理范围：工作目录位于 `PROJECTS_ROOT` 下、配置文件位于工作目录内的项目。其他项目只读可见。deployer 自身项目（`DEPLOY_ROOT`）永远不可管理。
 
@@ -89,9 +89,9 @@ iPhone ── Passkey ───────┤
 3. Cosign 校验签名身份 `https://github.com/<repo>/<workflow>@refs/heads/<branch>`，并校验镜像 `org.opencontainers.image.revision` 标签；
 4. runner 把该服务的镜像改为 `<image>@<digest>`：若 yaml 中 `image:` 是 `${VAR}` 则改 `.env`，否则改那一行；再验证渲染结果只有该服务的 image 变化；然后 up + 健康检查，失败恢复。
 
-webhook 密钥由 gateway 生成，只在 Passkey 登录后的审批页显示。Funnel 只暴露 `8443` 端口上的 `/hooks/` 路径；不开 Funnel 时只靠轮询。
+webhook 密钥由 gateway 生成，只在 Passkey 登录后的主页显示。`CD_FUNNEL=1` 且存在触发源时，Funnel 只暴露 `8443` 端口（该端口只有 `/hooks/`）；不开 Funnel 时只靠轮询。
 
-**发布到 tailnet（Serve）**：变更审批，内容为 `https://<deployer域名>:<端口> → host.docker.internal:<项目已发布的端口>`，仅 tailnet。gateway 写 `serve.json`，tailscale 容器自动加载。
+**发布到 tailnet（Serve）**：变更审批，内容为 `https://<deployer域名>:<端口> → host.docker.internal:<项目已发布的端口>`，仅 tailnet。gateway 通过 Tailscale LocalAPI 写入整份 Serve 配置（443 给主页/agent API，8443 给 webhook，其余为批准的路由），启动时也会重写一次。
 
 ## 6. 硬策略（runner 独立执行）
 

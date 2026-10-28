@@ -21,103 +21,23 @@ jobs:
         with:
           python-version: '3.12'
       - run: 'python3 -m pip install --require-hashes --only-binary=:all: -r requirements.txt'
-      - run: python3 -m unittest discover -s tests -v
-      - run: python3 scripts/generate_workflows.py --check
-      - run: python3 scripts/check_public_tree.py
-      - run: node scripts/test-task-approval-ui.cjs
-      - run: sh -n install.sh && bash -n scripts/sync-state.sh
-      - name: Validate and package single-project Synology installer
+      - name: Unit and real-Docker tests
+        run: CD_DOCKER_TESTS=1 PYTHONPATH=.:tests python3 -m unittest discover -s tests -v
+      - run: node --check gateway/static/app.js
+      - name: Validate the Synology Compose file
         run: |
-          DEPLOY_ROOT=/srv/compose-ci/deployer docker compose -f synology/compose.yaml config --quiet
-          python3 scripts/build_synology_installer.py
-      - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose config --quiet
-      - run: CD_ENGINE_IMAGE=example.invalid/engine@sha256:$(printf 'a%.0s' {1..64}) docker compose -f compose.yml -f compose.management.yml config --quiet
-      - name: Validate standalone app ingress isolation
-        env:
-          APP_INGRESS_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          APP_INGRESS_ROOT: /opt/compose-ci/ingress
-          APP_INGRESS_PARENT: /opt/compose-ci
-          APP_INGRESS_NODE_NAME: example-apps
-          APP_INGRESS_BACKEND_NETWORK: example-app-backends
-          APP_INGRESS_APPROVAL_KEY: /opt/compose-ci/control/secrets/approval-service.key
-          APP_INGRESS_APPROVAL_RUN: /opt/compose-ci/control/approval-run
-          APP_INGRESS_CONTROL_CONTAINER: example-control
-          APP_INGRESS_MANAGEMENT_HOST: control.example.ts.net:8443
-        run: |
-          docker compose -f compose.app-ingress.yml --profile gateway --profile bootstrap config --format json > /tmp/app-ingress.json
-          python3 - <<'PYCODE'
-          import json
-          cfg = json.load(open('/tmp/app-ingress.json'))
-          services = cfg['services']
-          assert services['ingress-broker']['network_mode'] == 'none'
-          assert services['app-proxy']['user'] == '10007:10007'
-          assert services['ingress-gateway']['network_mode'] == 'container:example-control'
-          for name, service in services.items():
-              assert not service.get('ports') and not service.get('privileged')
-              assert not any(v['source'] == '/var/run/docker.sock' for v in service.get('volumes', []))
-              if name in ('app-tailscale', 'app-proxy', 'ingress-gateway'):
-                  assert not any('approval' in v['target'] or 'secrets' in v['target'] for v in service.get('volumes', []))
-          assert set(services['app-tailscale']['networks']) == {'application_backends'}
-          PYCODE
-      - name: Validate minimal Synology Compose profile
-        env:
-          CD_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          CD_NAS_APP_CONFIG_DIR: /volume1/compose-cd-apps/example-app
-          CD_NAS_CONTROL_SUBNET: 172.31.247.0/28
-          CD_NAS_MANAGEMENT_IP: 172.31.247.2
-        run: |
-          docker compose -f compose.yml -f compose.management.yml -f examples/compose.synology.yml config --format json > /tmp/nas-profile.json
+          printf 'DEPLOY_ROOT=/volume1/docker/deployer\nPROJECTS_ROOT=/volume1/docker\n' > /tmp/ci.env
+          docker compose --env-file /tmp/ci.env -f synology/compose.yaml config --format json > /tmp/synology.json
           python3 - <<'PY'
           import json
-          cfg = json.load(open('/tmp/nas-profile.json'))
-          assert not cfg['services']['management'].get('ports')
-          assert cfg['services']['management']['networks']['caddy_net']['ipv4_address'] == '172.31.247.2'
-          assert not cfg['services']['receiver'].get('ports')
-          assert cfg['services']['runner']['network_mode'] == 'none'
-          assert not cfg['networks']['caddy_net'].get('external', False)
-          mounts = cfg['services']['runner']['volumes']
-          app = [v for v in mounts if v['target'] == '/volume1/compose-cd-apps/example-app']
-          assert len(app) == 1 and app[0]['read_only']
-          assert not any(v['target'].startswith('/volume1/') and v not in app for v in mounts)
-          PY
-      - name: Validate optional provisioning mounts
-        env:
-          CD_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          CD_DEPLOYER_WORKSPACE: /volume1/compose-deployer-private
-          CD_DEPLOYER_CONFIG_ROOT: /volume1/compose-app-config
-          CD_DEPLOYER_DOWNLOAD_ROOT: /volume1/compose-downloads
-        run: |
-          docker compose -f compose.yml -f compose.management.yml -f compose.provisioning.yml -f examples/compose.provisioning.synology.yml config --format json > /tmp/provisioning.json
-          python3 - <<'PY'
-          import json, os
-          cfg = json.load(open('/tmp/provisioning.json'))
-          assert cfg['services']['runner']['network_mode'] == 'none'
-          roots = {os.environ[k] for k in ('CD_DEPLOYER_WORKSPACE', 'CD_DEPLOYER_CONFIG_ROOT', 'CD_DEPLOYER_DOWNLOAD_ROOT')}
-          for name, service in cfg['services'].items():
-              for mount in service.get('volumes', []):
-                  if mount.get('target') in roots:
-                      assert name == 'runner' and mount['source'] == mount['target']
-                      assert not mount.get('read_only', False)
-          assert not cfg['services']['management'].get('ports')
-          PY
-      - name: Validate approval and verification isolation
-        env:
-          CD_ENGINE_IMAGE: example.invalid/engine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-        run: |
-          docker compose -f compose.yml -f compose.management.yml -f compose.provisioning.yml -f compose.authorization.yml config --format json > /tmp/authorization.json
-          python3 - <<'PY'
-          import json
-          cfg = json.load(open('/tmp/authorization.json'))
-          assert cfg['services']['runner']['network_mode'] == 'none'
-          for name in ('approval', 'project-verifier', 'management'):
-              service = cfg['services'][name]
-              assert not service.get('ports')
-              assert not any(v.get('source') == '/var/run/docker.sock' for v in service.get('volumes', []))
-          mounts = {name: {v['target'] for v in service.get('volumes', [])} for name, service in cfg['services'].items()}
-          assert '/var/lib/compose-cd-approval' not in mounts['runner']
-          assert '/run/compose-cd-approval' not in mounts['management']
-          assert '/etc/compose-cd/agent-keys' not in mounts['approval']
-          assert '/var/lib/compose-cd/state' not in mounts['approval']
+          s = json.load(open('/tmp/synology.json'))['services']
+          assert set(s) == {'tailscale', 'gateway', 'runner'}
+          assert s['runner']['network_mode'] == 'none'
+          assert s['gateway']['network_mode'] == 'service:tailscale'
+          sock = lambda name: any(v['source'] == '/var/run/docker.sock' for v in s[name].get('volumes', []))
+          assert sock('runner') and not sock('gateway') and not sock('tailscale')
+          assert all(v['source'].startswith('/volume1/docker/deployer/') for v in s['gateway']['volumes'])
+          assert all(not x.get('ports') and not x.get('privileged') for x in s.values())
           PY
   image:
     needs: validate
@@ -140,79 +60,12 @@ jobs:
           load: true
           tags: compose-cd-engine:test
           cache-from: type=gha
-      - name: Smoke test packaged engine and tools
+      - name: Smoke test packaged image
         run: |
-          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 receiver/receiver.py --help
-          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import verifier.verifier, verifier.provisioning, runner.runner, management.gateway, management.broker, deployer.service, authorization.server'
-          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -m scripts.task_delegation --help
-          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -m scripts.agent --help
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -c 'import gateway.server, runner.server, client.cdctl'
+          docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -m client.cdctl --help
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
-      - name: Exercise standalone app ingress on disposable Docker networks
-        run: python3 scripts/test-app-ingress-network.py --image compose-cd-engine:test
-      - name: Exercise first install, enrollment and repeated startup in disposable containers
-        run: |
-          docker run --rm --network none --user 0:0 \
-            -e PYTHONPATH=/src -v "$PWD:/src:ro" -w /src \
-            compose-cd-engine:test python3 -m unittest discover -s tests -p test_synology_installer.py -v
-          sudo install -d -m 755 /opt/compose-cd-synology-smoke
-          docker run --rm --user 0:0 --tmpfs /tmp:size=32m \
-            -e CD_DISPOSABLE_CI=1 -e CD_SOURCE="$PWD" \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v /opt/compose-cd-synology-smoke:/opt/compose-cd-synology-smoke \
-            -v "$PWD:$PWD:ro" \
-            compose-cd-engine:test python3 "$PWD/scripts/smoke_synology.py"
-      - name: Exercise same-image original-project adoption on disposable Docker
-        if: github.event_name == 'pull_request'
-        run: |
-          docker run --rm --network none --cap-drop ALL --user 0:0 \
-            -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD/scripts/smoke_adoption_transactions.py:/integration/smoke.py:ro" \
-            compose-cd-engine:test python3 /integration/smoke.py
-      - name: Exercise one Passkey task grant against disposable Docker
-        run: |
-          docker run --rm --network none --user 0:0 \
-            -e CD_DISPOSABLE_CI=1 -e CD_SMOKE_IMAGE=compose-cd-engine:test \
-            -e PYTHONPATH=/app:/integration/tests \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD/scripts:/app/scripts:ro" -v "$PWD/tests:/integration/tests:ro" \
-            compose-cd-engine:test python3 -m scripts.smoke_task_delegation
-      - name: Exercise restricted management against disposable Docker services
-        if: github.event_name == 'pull_request'
-        run: |
-          docker run --rm --network none --read-only --cap-drop ALL --user 0:0 --tmpfs /tmp:size=64m \
-            -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD/scripts/smoke_management.py:/integration/smoke.py:ro" \
-            compose-cd-engine:test python3 /integration/smoke.py
-      - name: Exercise project creation and failed update on disposable Docker
-        if: github.event_name == 'pull_request'
-        run: |
-          sudo install -d -m 700 /run/compose-project-smoke
-          docker run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --user 0:0 --tmpfs /tmp:size=64m \
-            -e CD_DISPOSABLE_CI=1 -v /var/run/docker.sock:/var/run/docker.sock \
-            -v /run/compose-project-smoke:/run/compose-project-smoke \
-            -v "$PWD/scripts/smoke_projects.py:/integration/smoke.py:ro" \
-            compose-cd-engine:test python3 /integration/smoke.py
-      - name: Exercise full authorization transport with disposable Docker
-        if: github.event_name == 'pull_request'
-        run: |
-          sudo install -d -m 700 /run/compose-project-smoke
-          docker run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --user 0:0 --tmpfs /tmp:size=64m \
-            -e CD_DISPOSABLE_CI=1 -e CD_AUTH_SMOKE=1 -v /var/run/docker.sock:/var/run/docker.sock \
-            -v /run/compose-project-smoke:/run/compose-project-smoke \
-            -v "$PWD/scripts/smoke_projects.py:/integration/smoke.py:ro" \
-            -v "$PWD/scripts/auth_smoke_adapter.py:/integration/auth_smoke_adapter.py:ro" \
-            -v "$PWD/scripts/agent.py:/app/scripts/agent.py:ro" \
-            -v "$PWD/tests:/integration/tests:ro" \
-            compose-cd-engine:test python3 /integration/smoke.py
-      - name: Verify public signed provisioning release independently (no Docker socket)
-        if: github.event_name == 'pull_request'
-        run: |
-          docker run --rm --read-only --cap-drop ALL --user 0:0 --tmpfs /tmp:size=64m --tmpfs /run:size=4m,mode=0755 \
-            -e CD_DISPOSABLE_CI=1 -e HOME=/tmp \
-            -v "$PWD/scripts/smoke_signed_provisioning.py:/integration/smoke.py:ro" \
-            -v "$PWD/examples/agent-deployer-policy.json:/integration/policy.json:ro" \
-            compose-cd-engine:test python3 /integration/smoke.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         if: github.event_name != 'pull_request'
         with:
@@ -266,30 +119,3 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}
           DIGEST: ${{ needs.image.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
-  synology-installer:
-    needs: sign
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - name: Publish GUI installer after the matching edge image is signed
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/build_synology_installer.py
-          cat > /tmp/installer-notes.md <<'NOTES'
-          Single-project DSM Container Manager installer: download compose.yaml, set DEPLOY_ROOT in the project .env to your chosen absolute NAS project directory, then import and start. The ZIP is an optional Compose + guide copy, not a runtime dependency. No SSH commands required for first installation.
-
-          Uses moving engine edge / Tailscale stable tags. The bundle is released only after its engine build and signing succeed. DSM GUI, real tailnet TLS and iPhone acceptance remain on-device checks; existing installations are not migrated.
-          NOTES
-          if gh release view "synology-${GITHUB_SHA}" >/dev/null 2>&1; then
-            gh release upload "synology-${GITHUB_SHA}" /tmp/compose-deployer-synology.zip synology/compose.yaml --clobber
-          else
-            gh release create "synology-${GITHUB_SHA}" /tmp/compose-deployer-synology.zip synology/compose.yaml \
-              --target "$GITHUB_SHA" --prerelease --title 'Synology installer (edge)' \
-              --notes-file /tmp/installer-notes.md
-          fi

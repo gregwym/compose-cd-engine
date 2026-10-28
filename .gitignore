@@ -1,9 +1,3 @@
 __pycache__/
 *.pyc
-secrets/*
-run/*
-state/*
-inbox/*
-!secrets/.gitkeep
-
-bin/*
+.env

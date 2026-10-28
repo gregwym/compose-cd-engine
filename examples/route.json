@@ -1,9 +1,0 @@
-{
-  "repository": "OWNER/REPOSITORY",
-  "repository_id": 123456789,
-  "workflow": ".github/workflows/docker.yml",
-  "branch": "main",
-  "route": "/hooks/example-app",
-  "signal_socket": "/run/compose-cd/verify-example-app.sock",
-  "secret_file": "/etc/compose-cd/secrets/example-app"
-}
