@@ -62,6 +62,7 @@ iPhone ── Passkey ───────┤
 
 规则：
 - 审批链接是不可猜测的 capability URL；打开无需登录，**批准/拒绝需要一次 Passkey 断言**，challenge 绑定请求内容的 hash。请求内容在创建后不可变。
+- 发起请求的 agent 也知道这个 ID，所以 diff、风险项和 agent 未提供的 compose 原文只给已用 Passkey 登录的主人；未登录打开变更审批页时先登录再显示批准按钮。agent 自己收到的请求视图同样不含这些内容。
 - 运维 grant 记录批准时的项目身份（name/working_dir/config_files）。每次操作时 runner 比对实际标签，不一致即拒绝。
 - 新建项目的审批同时签发该项目的运维 grant。
 - 解除配对会撤销该 agent 的所有 grant 和待审请求。任何 grant 可在审批页单独撤销。
@@ -97,12 +98,13 @@ webhook 密钥由 gateway 生成，只在 Passkey 登录后的主页显示。`CD
 
 对**变更后完整渲染的配置**检查；违反则拒绝，不进入审批：
 - `privileged: true`；`cap_add` 含 `ALL`、`SYS_ADMIN`、`SYS_MODULE`；`pid`/`userns_mode: host`；`security_opt` 含 `unconfined`；
-- 挂载 Docker socket；挂载 `/`、系统目录（`/etc`、`/proc`、`/sys`、`/dev`、`/boot`、`/root`、`/usr`、`/run`、`/var/run`、`/var/lib/docker`、`/var/packages`）、卷根（`/volumeN`）、`@` 开头的系统目录、deployer 自身目录；
+- 挂载 Docker socket；挂载 `/`、系统目录（`/etc`、`/proc`、`/sys`、`/dev`、`/boot`、`/root`、`/usr`、`/run`、`/var/run`、`/var/lib/docker`、`/var/packages`）、卷根（`/volumeN`）、`@` 开头的系统目录、deployer 自身目录。同样的路径规则适用于 bind 挂载、`driver_opts.device` 指向宿主路径的命名卷、`secrets`/`configs` 的 `file:` 和 `env_file`；runner 能看到的路径还按解析符号链接后的目标再查一次；
+- `use_api_socket`（Compose 会注入 Docker socket）；
 - `build:`。
 
-风险项（允许，但在审批页高亮）：`network_mode: host`、其余 `cap_add`、`devices`、挂载项目目录以外的路径（显示读写属性）、新增或变更的端口。
+风险项（允许，但在审批页高亮）：`network_mode: host`、其余 `cap_add`、`devices`、挂载或读取项目目录以外的路径（bind 挂载显示读写属性）、新增或变更的端口。
 
-已有项目本身违反硬策略（例如 Portainer 挂了 docker.sock）时：只读和运维档操作可用，变更被拒绝，需在 CM 里处理。
+已有项目本身违反硬策略（例如 Portainer 挂了 docker.sock）时：只读操作和 start/stop/restart 可用；会重建容器的 `up`/`update` 和变更都被拒绝，需在 CM 里处理。`up`/`update` 每次执行前重新检查硬策略，因为批准后文件或符号链接可能已改变。
 
 ## 7. 健康判定
 

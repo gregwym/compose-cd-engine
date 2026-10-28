@@ -89,6 +89,12 @@ class OwnerHandler(Handler):
             self.server.sessions[key] = {'csrf': secrets.token_urlsafe(24), 'owner': False, 'expires': stamp + SESSION_TTL}
             return key, self.server.sessions[key], token
 
+    def signed_in(self):
+        try:
+            return self.session()[1]['owner']
+        except Denied:
+            return False
+
     def check_host(self):
         host = self.server.gateway.host
         if host not in (self.headers.get('Host'), self.headers.get('X-Forwarded-Host')):
@@ -113,7 +119,8 @@ class OwnerHandler(Handler):
                 item = gateway.store.request(path[13:])
                 if not item:
                     raise Denied('not_found')
-                return self.reply(200, gateway.public(item))
+                # Agents know their request ids, so file content and risks need a signed-in owner.
+                return self.reply(200, gateway.public(item, owner=self.signed_in()))
             if path.startswith('/api/pairing/'):
                 with gateway.store.db() as db:
                     row = db.execute('SELECT * FROM agents WHERE token=?', (path[13:],)).fetchone()

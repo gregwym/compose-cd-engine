@@ -57,12 +57,31 @@ def volume_devices(config):
             yield name, device
 
 
+def host_files(config):
+    """Host files Compose reads or mounts outside `volumes`: secret and config files, and env_file."""
+    for kind in ('secrets', 'configs'):
+        for name, item in sorted((config.get(kind) or {}).items()):
+            path = (item or {}).get('file')
+            if isinstance(path, str) and path.startswith('/'):
+                yield f'{kind[:-1]} {name}', path
+    for name, service in sorted((config.get('services') or {}).items()):
+        items = service.get('env_file') or []
+        for item in [items] if isinstance(items, str) else items:
+            path = item.get('path') if isinstance(item, dict) else item
+            if isinstance(path, str) and path.startswith('/'):
+                yield f'{name}: env_file', path
+
+
 def violations(config, deploy_root):
     found = []
     for name, device in volume_devices(config):
         reason = forbidden_source(device, deploy_root)
         if reason:
             found.append(f'volume {name}: {reason}')
+    for label, path in host_files(config):
+        reason = forbidden_source(path, deploy_root)
+        if reason:
+            found.append(f'{label}: {reason}')
     for name, service in sorted((config.get('services') or {}).items()):
         if service.get('privileged'):
             found.append(f'{name}: privileged')
@@ -93,6 +112,9 @@ def highlights(config, working_dir):
     for name, device in volume_devices(config):
         if not under(normal(device), working_dir):
             out.add(f'volume {name}: host path {normal(device)}')
+    for label, path in host_files(config):
+        if not under(normal(path), working_dir):
+            out.add(f'{label}: host file {normal(path)}')
     for name, service in (config.get('services') or {}).items():
         if service.get('network_mode') == 'host':
             out.add(f'{name}: host network')

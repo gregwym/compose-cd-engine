@@ -48,7 +48,9 @@ class EndToEnd(unittest.TestCase):
         current = self.agent('read', project=self.name)['compose']
         change = self.agent('request', kind='change', project=self.name, compose=current.replace('3600', '7200'),
                             env_set={'MODE': 'prod'})
-        self.assertIn('+    command: ["sh", "-c", "touch /tmp/ok; sleep 7200"]', change['detail']['plan']['diff'])
+        self.assertNotIn('diff', change['detail']['plan'])  # only the signed-in owner sees the preview
+        status, page = self.stack.browser.request('GET', '/api/request/' + change['id'])
+        self.assertIn('+    command: ["sh", "-c", "touch /tmp/ok; sleep 7200"]', page['detail']['plan']['diff'])
         done = self.stack.approve(change)
         self.assertEqual(self.stack.wait_job(done['outcome']['job'])['status'], 'success')
         self.assertIn('7200', (self.root / self.name / 'compose.yaml').read_text())

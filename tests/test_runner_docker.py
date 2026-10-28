@@ -119,6 +119,24 @@ class RunnerDocker(unittest.TestCase):
         self.assertIn('web: host path /tmp -> /host-tmp (read-only)', plan['highlights'])
         self.assertIn('web: port 127.0.0.1:18999 -> 80/tcp', plan['highlights'])
 
+    def test_secret_and_env_files_follow_the_mount_rules(self):
+        self.create()
+        deployer = Path(self.temp) / 'deployer'
+        deployer.mkdir()
+        (deployer / 'state').write_text('KEY=private\n')
+        outside = Path(self.temp) / 'outside.env'
+        outside.write_text('OTHER=1\n')
+        env_file = HEALTHY.replace('    volumes:', '    env_file: [{path}]\n    volumes:')
+        secret = HEALTHY.replace('    volumes:', '    secrets: [s]\n    volumes:') + 'secrets:\n  s:\n    file: {path}\n'
+        for text in (env_file, secret):
+            with self.assertRaises(Denied) as caught:
+                self.runner.plan(self.identity(), text.format(path=deployer / 'state'))
+            self.assertEqual(caught.exception.code, 'policy')
+        self.assertIn(f'web: env_file: host file {outside}',
+                      self.runner.plan(self.identity(), env_file.format(path=outside))['highlights'])
+        self.assertIn(f'secret s: host file {outside}',
+                      self.runner.plan(self.identity(), secret.format(path=outside))['highlights'])
+
     def test_lifecycle(self):
         self.create()
         self.assertEqual(self.runner.lifecycle(self.identity(), 'stop')['status'], 'success')

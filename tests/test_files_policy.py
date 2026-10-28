@@ -97,6 +97,18 @@ class HardPolicy(unittest.TestCase):
         self.assertEqual(policy.violations(config, '/volume1/docker/deployer'), [])
         self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {'volume data: host path /volume1/media'})
 
+    def test_secret_config_and_env_files_follow_the_mount_rules(self):
+        for path in ('/etc/shadow', '/volume1/docker/deployer/gateway/gateway.sqlite'):
+            for config in ({'secrets': {'s': {'file': path}}}, {'configs': {'c': {'file': path}}},
+                           service(env_file=[{'path': path, 'required': True}]), service(env_file=[path])):
+                self.assertTrue(policy.violations(config, '/volume1/docker/deployer'), (path, config))
+        config = {'services': {'web': {'env_file': [{'path': '/volume1/docker/other/.env'},
+                                                    {'path': '/volume1/docker/app/.env'}]}},
+                  'secrets': {'s': {'file': '/volume1/keys/s'}}}
+        self.assertEqual(policy.violations(config, '/volume1/docker/deployer'), [])
+        self.assertEqual(policy.highlights(config, '/volume1/docker/app'), {
+            'secret s: host file /volume1/keys/s', 'web: env_file: host file /volume1/docker/other/.env'})
+
     def test_violations_do_not_echo_paths(self):
         found = policy.violations(service(volumes=[{'type': 'bind', 'source': '/etc/hunter2', 'target': '/x'}]), '')
         self.assertNotIn('hunter2', ' '.join(found))
@@ -122,10 +134,6 @@ class Repositories(unittest.TestCase):
         self.assertEqual(repository('nginx:1'), repository('docker.io/library/nginx@sha256:' + 'a' * 64))
         self.assertEqual(repository('ghcr.io/o/app:sha-1'), 'ghcr.io/o/app')
         self.assertNotEqual(repository('ghcr.io/o/app'), repository('ghcr.io/x/app'))
-
-
-if __name__ == '__main__':
-    unittest.main()
 
 
 class ServeRouting(unittest.TestCase):
@@ -250,3 +258,7 @@ class ResolvedAndRechecked(unittest.TestCase):
             self.assertEqual(result['error'], 'write_failed')
             self.assertEqual((wd / 'compose.yaml').read_bytes(), b'old: 1\n')
             self.assertFalse((wd / '.env').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

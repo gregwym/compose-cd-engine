@@ -112,6 +112,11 @@ class Gateway(unittest.TestCase):
             self.assertNotIn(key, request['detail']['plan'])
             self.assertNotIn(key, self.agent('request_status', id=request['id'])['detail']['plan'])
         self.assertIn('diff', self.stack.browser.request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
+        # The agent knows the id: without an owner session the page endpoint is as redacted as the agent API.
+        anonymous = self.fresh().request('GET', '/api/request/' + request['id'])[1]['detail']['plan']
+        self.assertTrue(anonymous['redacted'])
+        self.assertNotIn('diff', anonymous)
+        self.assertNotIn('highlights', anonymous)
         status, page = self.stack.browser.request('GET', '/api/request/' + request['id'])
         self.assertNotIn('secret-value', json.dumps(page))
         decided = self.stack.approve(request)
@@ -125,6 +130,7 @@ class Gateway(unittest.TestCase):
         self.stack.pair()
         request = self.agent('request', kind='change', project='app', env_set={'A': '1'})
         self.assertNotIn('compose', request['detail']['plan'])
+        self.assertNotIn('compose', self.fresh().request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
         self.assertIn('compose', self.stack.browser.request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
 
     def test_runner_refusal_is_returned_and_no_request_created(self):

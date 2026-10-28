@@ -62,6 +62,11 @@ const KIND = {operate: '运维授权', change: '修改配置', create: '新建�
   unserve: '取消 tailnet 发布', trigger: '自动部署触发源'};
 
 function plan(box, p) {
+  if (p.redacted) {
+    el(box, 'p', '登录后才显示 compose.yaml 变更和需要注意的风险。', 'risk');
+    button(box, '用 Passkey 登录查看', async () => { await passkey('login'); await route(); }, true);
+    return false;
+  }
   if (p.highlights.length) { el(box, 'h3', '需要注意', 'risk'); list(box, p.highlights, 'risk'); }
   const env = p.env;
   if (env.added.length || env.changed.length || env.removed.length) {
@@ -70,6 +75,7 @@ function plan(box, p) {
   }
   if (p.diff) { el(box, 'h3', 'compose.yaml 变更'); diff(box, p.diff); }
   el(box, 'p', '执行：写入前在同目录备份，然后 up -d；健康检查失败自动恢复原文件。', 'muted');
+  return true;
 }
 
 function request(parent, r) {
@@ -77,6 +83,7 @@ function request(parent, r) {
   el(box, 'h3', `${KIND[r.kind]} · ${r.project || ''}`);
   el(box, 'p', `申请者：${r.agent} · 状态：${r.status} · 过期：${when(r.expires)}`, 'muted');
   const d = r.detail;
+  let reviewable = true;
   if (r.kind === 'operate') {
     identity(box, d.identity);
     el(box, 'p', `允许 ${d.lifetime / 86400} 天：读取 compose.yaml 原文和 .env 键名；启动、停止、重启、up、拉取新镜像并更新。`);
@@ -84,7 +91,7 @@ function request(parent, r) {
   } else if (r.kind === 'change' || r.kind === 'create') {
     identity(box, d.plan.identity);
     if (r.kind === 'create') el(box, 'p', `批准后同时授予该项目 ${d.lifetime / 86400} 天运维授权。`);
-    plan(box, d.plan);
+    reviewable = plan(box, d.plan);
   } else if (r.kind === 'down') {
     identity(box, d.identity);
     el(box, 'p', 'docker compose down：停止并删除容器和网络。卷和数据目录保留。', 'risk');
@@ -99,7 +106,7 @@ function request(parent, r) {
     el(box, 'p', '每次更新只改这个服务的镜像；健康检查失败自动恢复。', 'muted');
   }
   if (r.outcome) el(box, 'pre', JSON.stringify(r.outcome, null, 2));
-  if (r.status === 'pending') {
+  if (r.status === 'pending' && reviewable) {
     button(box, '用 Face ID 批准', async () => { await passkey('approve', r.id); await route(); }, true);
     button(box, '拒绝', async () => { await passkey('deny', r.id); await route(); });
   }

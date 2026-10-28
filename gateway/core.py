@@ -193,7 +193,7 @@ class Gateway:
         return {'identity': identity, 'service': service, 'config': config,
                 'signer': triggers.identity(config)}
 
-    def public(self, item, owner=True):
+    def public(self, item, owner):
         detail = dict(item['detail'])
         if 'plan' in detail:
             plan = dict(detail['plan'])
@@ -205,6 +205,7 @@ class Gateway:
                     plan.pop(key, None)
                 if detail.get('compose_supplied') is False:
                     plan.pop('compose', None)  # an .env-only change would echo the current Compose file
+                plan['redacted'] = True
             detail['plan'] = plan
         return {'id': item['id'], 'kind': item['kind'], 'project': item['project'], 'agent': item['agent'],
                 'status': item['status'], 'created': item['created'], 'expires': item['expires'],
