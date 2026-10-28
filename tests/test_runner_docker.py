@@ -130,7 +130,8 @@ class RunnerDocker(unittest.TestCase):
         secret = HEALTHY.replace('    volumes:', '    secrets: [s]\n    volumes:') + 'secrets:\n  s:\n    file: {path}\n'
         for text in (env_file, secret):
             for path in (deployer / 'state', '../../deployer/state'):  # relative paths resolve from the project
-                with self.assertRaises(Denied, msg=(text, path)) as caught:
+                rendered = self.runner.render(self.identity(), text.format(path=path).encode(), None)
+                with self.assertRaises(Denied, msg=json.dumps(rendered)) as caught:
                     self.runner.plan(self.identity(), text.format(path=path))
                 self.assertEqual(caught.exception.code, 'policy')
         self.assertIn(f'web: env_file: host file {outside}',
