@@ -19,7 +19,7 @@
      ```
 2. Container Manager → 项目 → 新增 → 路径选 `DEPLOY_ROOT` → 使用现有 compose.yaml → 启动。
 
-会启动三个容器：`tailscale`、`gateway`、`runner`。
+会先运行一次 `prepare`（初始化 deployer 自己的状态和 socket 目录，完成后显示"已退出"，属正常），再启动三个容器：`tailscale`、`gateway`、`runner`。不需要 SSH 建目录或改属主。
 
 ## 3. 登录 Tailscale
 
@@ -72,7 +72,7 @@ GitHub 需要从公网访问这个地址，因此要开 Tailscale Funnel：
 
 这些在 CI 中无法验证，首次部署时请逐项确认：
 
-- [ ] CM 中三个容器正常运行；deployer 项目在 agent 的项目列表里显示为不可管理。
+- [ ] CM 中 `prepare` 退出码为 0，三个容器正常运行；deployer 项目在 agent 的项目列表里显示为不可管理。
 - [ ] iPhone Safari 能注册并使用 Passkey。
 - [ ] agent 修改某项目后，CM 中仍是同一个项目，可正常启动、停止、构建；编辑器里是新内容。
 - [ ] 修改后 `compose.yaml` 的属主、权限、File Station 中的 ACL 不变；旁边有 `.bak-` 备份。

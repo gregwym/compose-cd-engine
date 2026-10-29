@@ -14,7 +14,7 @@
 
 ## 2. 组件
 
-一个 Compose 项目（`synology/compose.yaml`），三个容器：
+一个 Compose 项目（`synology/compose.yaml`），三个常驻容器，外加启动前运行一次的 `prepare`：
 
 ```
 OpenClaw ── 签名 HTTPS ──┐
@@ -31,6 +31,7 @@ iPhone ── Passkey ───────┤
 | `tailscale` | 普通容器，userspace 模式 | tailnet HTTPS 证书、Serve 路由、可选 Funnel（仅 webhook 端口） |
 | `gateway` | 无 Docker socket，无项目目录 | agent API、Passkey 审批页、webhook、镜像签名校验、**唯一的 sqlite** |
 | `runner` | Docker socket，`network_mode: none` | 执行固定 Compose 操作；强制执行硬策略；无数据库 |
+| `prepare` | 一次性，`network_mode: none`，只挂载 `DEPLOY_ROOT` | 把 `state/` 和 `run/` 下 deployer 自用的目录设为 root 所有、权限符合各服务要求（Tailscale 状态目录必须是 `0700`），然后退出；不删除任何内容，可重复执行 |
 
 信任边界：
 - runner 信任 gateway 的"谁被授权"判断（同一主机、只通过 root-only unix socket 通信）。

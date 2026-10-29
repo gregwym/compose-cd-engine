@@ -16,10 +16,24 @@ x-engine: &engine
     options: {max-size: 2m, max-file: '3'}
 
 services:
+  # One-shot: makes the deployer's state and socket directories root-owned with the modes the
+  # services expect, so a DEPLOY_ROOT made in File Station works as is. Exits when done.
+  prepare:
+    <<: *engine
+    command: [python3, -m, shared.prepare, /deployer]
+    restart: 'no'
+    user: '0:0'
+    network_mode: none
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    volumes:
+      - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}:/deployer
+
   tailscale:
     image: tailscale/tailscale:stable
     hostname: deployer
     restart: unless-stopped
+    depends_on:
+      prepare: {condition: service_completed_successfully}
     environment:
       TS_HOSTNAME: deployer
       TS_USERSPACE: 'true'
@@ -43,7 +57,10 @@ services:
     # Root without capabilities: owns only its own state directory and the Tailscale LocalAPI.
     user: '0:0'
     network_mode: service:tailscale
-    depends_on: [tailscale, runner]
+    depends_on:
+      prepare: {condition: service_completed_successfully}
+      tailscale: {condition: service_started}
+      runner: {condition: service_started}
     environment:
       HOME: /tmp
       CD_FUNNEL: ${CD_FUNNEL:-0}
@@ -57,6 +74,8 @@ services:
     command: [python3, -m, runner.server]
     user: '0:0'
     network_mode: none
+    depends_on:
+      prepare: {condition: service_completed_successfully}
     # Writes Container Manager project files in place, keeping their owners.
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     environment:
