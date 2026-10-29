@@ -332,13 +332,13 @@ class Gateway:
     def public_preview(self, item):
         # Capability URL exposes only an allowlisted, value-free review projection.
         detail = item['detail']
-        safe = {k: detail[k] for k in ('identity', 'lifetime', 'scope', 'boundary', 'new', 'service', 'signer') if k in detail}
+        safe = {k: detail[k] for k in ('identity', 'lifetime', 'scope', 'boundary', 'new', 'service', 'signer', 'config', 'url', 'target_port', 'https_port') if k in detail}
         if 'plan' in detail:
             plan = detail['plan']
             safe['plan'] = {'identity': plan['identity'], 'new': plan.get('new', False),
-                            'diff': plan.get('safe_diff', 'Legacy preview withheld; authenticated review required.'),
+                            'diff': plan.get('safe_diff', 'Legacy preview withheld; submit a new request.'),
                             'highlights': [], 'env': plan.get('env', {}), 'services': plan.get('services', []),
-                            'redacted': True}
+                            'redacted': 'safe_diff' not in plan}
         return {**{k: item[k] for k in ('id', 'kind', 'project', 'agent', 'status', 'created', 'expires')},
                 'detail': safe, 'outcome': None, 'approval_url': f"{self.origin}/r/{item['id']}"}
 

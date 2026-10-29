@@ -40,7 +40,9 @@ class EndToEnd(unittest.TestCase):
     def test_create_operate_change_and_down(self):
         created = self.stack.approve(self.agent('request', kind='create', project=self.name, compose=HEALTHY, days=1))
         self.assertEqual(self.stack.wait_job(created['outcome']['job'])['status'], 'success')
+        read = self.stack.approve(self.agent('request', kind='read'))
         listed = {p['project']: p for p in self.agent('projects')['projects']}
+        self.stack.browser.passkey('revoke', read['outcome']['grant'])
         self.assertTrue(listed[self.name]['manageable'])
         self.assertIsNotNone(listed[self.name]['operate_until'])
 
@@ -48,9 +50,11 @@ class EndToEnd(unittest.TestCase):
         current = self.agent('read', project=self.name)['compose']
         change = self.agent('request', kind='change', project=self.name, compose=current.replace('3600', '7200'),
                             env_set={'MODE': 'prod'})
-        self.assertNotIn('diff', change['detail']['plan'])  # only the signed-in owner sees the preview
+        self.assertNotIn('diff', change['detail']['plan'])  # agent response excludes the raw diff
         status, page = self.stack.browser.request('GET', '/api/request/' + change['id'])
-        self.assertIn('+    command: ["sh", "-c", "touch /tmp/ok; sleep 7200"]', page['detail']['plan']['diff'])
+        self.assertFalse(page['detail']['plan']['redacted'])
+        self.assertNotIn('sleep 7200', page['detail']['plan']['diff'])
+        self.assertEqual(page['detail']['plan']['env']['added'], ['MODE'])
         done = self.stack.approve(change)
         self.assertEqual(self.stack.wait_job(done['outcome']['job'])['status'], 'success')
         self.assertIn('7200', (self.root / self.name / 'compose.yaml').read_text())

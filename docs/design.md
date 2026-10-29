@@ -201,7 +201,19 @@ delivery cannot select an old digest.
 Gateway.public_preview(item) is the HTTP review contract for anonymous and owner
 sessions: structural safe_diff from before/after rendered config, no raw compose,
 diff, env values or job outcomes. Legacy requests without safe_diff show a withheld
-placeholder. Scalar values are all hidden rather than guessing which are secrets.
+placeholder and require resubmission for browser review. The allowlisted projection shows
+images, ports, mounts, networks and lifecycle/security flags. Environment values,
+commands, labels, healthcheck payloads and unknown fields are hidden. Known environment
+values from both versions and common credential patterns are scrubbed from visible
+fields. Resource names and paths are intentionally visible: do not put credentials
+in names or paths. This is not a guarantee against arbitrary secret encoding.
+
+The request link needs no login. Approval/denial requires an authenticated owner
+session (15 minutes), same-origin CSRF checks, and the exact row binding returned
+with the displayed preview. Snapshot and binding are read atomically; decisions
+compare and update atomically. A changed, expired or decided request fails closed.
+The first decision asks for Passkey login; an existing owner session is reused.
+Pairing, revocation and other account actions retain their Passkey ceremonies.
 
 Official references: Docker container exec CLI, Compose volumes/networks reference,
 GitHub validating webhook deliveries/best practices. Explicit resource names are

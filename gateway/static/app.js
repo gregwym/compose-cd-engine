@@ -1,5 +1,11 @@
 'use strict';
-let csrf = '';
+let csrf = '', signedIn = false;
+
+async function decide(action, request) {
+  if (!signedIn) { await passkey('login'); signedIn = true; }
+  await api('decision', {action, target: request.id, binding: request.binding});
+  await route();
+}
 const $ = id => document.getElementById(id);
 const b64 = v => Uint8Array.from(atob(v.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const u64 = v => btoa(String.fromCharCode(...new Uint8Array(v))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -38,7 +44,7 @@ function el(parent, tag, text, cls) {
 function button(parent, label, fn, primary) {
   const b = el(parent, 'button', label, primary ? 'primary' : '');
   b.onclick = async () => {
-    b.disabled = true; $('message').textContent = '等待 Passkey…';
+    b.disabled = true; $('message').textContent = '处理中…';
     try { await fn(); $('message').textContent = '完成。'; } catch (e) { $('message').textContent = e.message; }
     finally { b.disabled = false; }
   };
@@ -58,13 +64,12 @@ function identity(parent, id) {
   el(parent, 'p', '文件：' + id.config_files.join(', '), 'muted');
 }
 
-const KIND = {operate: '运维授权', change: '修改配置', create: '新建项目', down: '停止并删除容器', serve: '发布到 tailnet',
+const KIND = {read: '全局只读授权', manage: '项目管理授权', elevated: '限时高级运维授权', operate: '运维授权', change: '修改配置', create: '新建项目', down: '停止并删除容器', serve: '发布到 tailnet',
   unserve: '取消 tailnet 发布', trigger: '自动部署触发源'};
 
 function plan(box, p) {
   if (p.redacted) {
-    el(box, 'p', '登录后才显示 compose.yaml 变更和需要注意的风险。', 'risk');
-    button(box, '用 Passkey 登录查看', async () => { await passkey('login'); await route(); }, true);
+    el(box, 'p', '此旧请求没有安全预览，请重新提交请求。', 'risk');
     return false;
   }
   if (p.highlights.length) { el(box, 'h3', '需要注意', 'risk'); list(box, p.highlights, 'risk'); }
@@ -84,7 +89,20 @@ function request(parent, r) {
   el(box, 'p', `申请者：${r.agent} · 状态：${r.status} · 过期：${when(r.expires)}`, 'muted');
   const d = r.detail;
   let reviewable = true;
-  if (r.kind === 'operate') {
+  if (['read', 'manage', 'elevated'].includes(r.kind)) {
+    if (r.kind !== 'read') identity(box, d.identity);
+    el(box, 'p', d.lifetime ? `授权有效期：${d.lifetime} 秒` : '授权有效期：无期限，可随时撤销');
+    if (r.kind === 'read') {
+      el(box, 'p', '读取所有 Compose 项目（包括 Deployer）及 Docker 环境诊断信息；不授予文件写入或任意主机文件读取权限。');
+    } else if (r.kind === 'manage') {
+      el(box, 'p', '在下列数据与资源边界内持续部署、修改配置和运维，不逐次审批。', 'muted');
+      el(box, 'pre', JSON.stringify(d.boundary, null, 2));
+      el(box, 'p', '读写目录内的数据可被项目修改或删除；请保留备份。', 'risk');
+    } else {
+      el(box, 'p', '在现有项目管理边界内重复执行 exec；到期或撤销后禁止新的高级操作。');
+      el(box, 'p', '关联管理授权：' + d.boundary.manage_grant, 'muted');
+    }
+  } else if (r.kind === 'operate') {
     identity(box, d.identity);
     el(box, 'p', `允许 ${d.lifetime / 86400} 天：读取 compose.yaml 原文和 .env 键名；启动、停止、重启、up、拉取新镜像并更新。`);
     el(box, 'p', '不允许：修改配置、删除容器、读取 .env 的值。', 'muted');
@@ -106,9 +124,10 @@ function request(parent, r) {
     el(box, 'p', '每次更新只改这个服务的镜像；健康检查失败自动恢复。', 'muted');
   }
   if (r.outcome) el(box, 'pre', JSON.stringify(r.outcome, null, 2));
-  if (r.status === 'pending' && reviewable) {
-    button(box, '用 Face ID 批准', async () => { await passkey('approve', r.id); await route(); }, true);
-    button(box, '拒绝', async () => { await passkey('deny', r.id); await route(); });
+  if (r.status === 'pending' && reviewable && r.binding) {
+    el(box, 'p', '预览已隐藏敏感值；决定只适用于当前显示的版本。', 'muted');
+    button(box, signedIn ? '批准' : '验证身份并批准', () => decide('approve', r), true);
+    button(box, signedIn ? '拒绝' : '验证身份并拒绝', () => decide('deny', r));
   }
 }
 
@@ -119,7 +138,7 @@ async function pairing(token) {
   el(box, 'p', '身份：' + p.agent, 'muted');
   el(box, 'p', '请与 agent 端显示的指纹逐字比对：');
   el(box, 'pre', p.fingerprint);
-  el(box, 'p', '配对后它可以读取 NAS 上所有 Compose 项目的状态、镜像、端口和最近日志。任何修改都需要再次批准。');
+  el(box, 'p', '配对只确认 agent 身份，不授予项目访问权限。随后可授予全局只读、项目管理或限时高级运维权限。');
   if (p.status === 'pending') {
     button(box, '指纹一致，用 Face ID 配对', async () => { await passkey('pair', token); await route(); }, true);
     button(box, '拒绝', async () => { await passkey('deny_pair', token); await route(); });
@@ -144,11 +163,13 @@ async function dashboard(session) {
     el(box, 'h3', `${a.label} · ${a.status}`); el(box, 'p', a.id, 'muted');
     if (a.status === 'active') button(box, '解除配对（撤销全部授权）', async () => { await passkey('unpair', a.id); await route(); });
   }
-  el(c, 'h2', '运维授权');
+  el(c, 'h2', '持续授权');
   if (!d.grants.length) el(c, 'p', '无。', 'muted');
   for (const g of d.grants) {
     const box = el(c, 'article');
-    el(box, 'h3', g.project); el(box, 'p', `${g.agent} · 到期 ${when(g.expires)}`, 'muted');
+    el(box, 'h3', `${KIND[g.scope] || '旧版运维授权'} · ${g.project}`);
+    el(box, 'p', `${g.agent} · ${g.expires ? '到期 ' + when(g.expires) : '无期限'}`, 'muted');
+    if (g.scope === 'manage') el(box, 'pre', JSON.stringify(g.boundary, null, 2));
     button(box, '撤销', async () => { await passkey('revoke', g.id); await route(); });
   }
   el(c, 'h2', '自动部署触发源');
@@ -187,7 +208,7 @@ function enroll() {
 }
 
 async function route() {
-  const session = await api('session'); csrf = session.csrf;
+  const session = await api('session'); csrf = session.csrf; signedIn = session.owner;
   $('content').replaceChildren(); $('nav').replaceChildren();
   if (session.owner) {
     button($('nav'), '退出', async () => { await api('logout', {}); await route(); });

@@ -116,11 +116,15 @@ class OwnerHandler(Handler):
                 return self.reply(200, {'csrf': session['csrf'], 'owner': session['owner'],
                                         'enrolled': gateway.store.enrolled()}, cookie=token)
             if path.startswith('/api/request/'):
-                item = gateway.store.request(path[13:])
-                if not item:
-                    raise Denied('not_found')
-                # Agents know their request ids, so file content and risks need a signed-in owner.
-                return self.reply(200, gateway.public(item, owner=self.signed_in()))
+                # Read the projection and its version in the same transaction.
+                with gateway.store.db() as db:
+                    item = gateway.store.decode(db.execute('SELECT * FROM requests WHERE id=?', (path[13:],)).fetchone())
+                    if not item:
+                        raise Denied('not_found')
+                    preview = gateway.public_preview(item)
+                    if item['status'] == 'pending' and item['expires'] > time.time():
+                        preview['binding'] = self.server.passkeys.binding(db, 'approve', item['id'])
+                return self.reply(200, preview)
             if path.startswith('/api/pairing/'):
                 with gateway.store.db() as db:
                     row = db.execute('SELECT * FROM agents WHERE token=?', (path[13:],)).fetchone()
@@ -167,6 +171,20 @@ class OwnerHandler(Handler):
                     gateway.execute(result['target'])
                 elif result['action'] in ('remove_route', 'remove_trigger'):
                     gateway.sync_serve()
+            elif path == '/api/decision':
+                if not session['owner']:
+                    raise Denied('sign_in_required')
+                action, target, binding = value.get('action'), value.get('target'), value.get('binding')
+                if action not in ('approve', 'deny') or not isinstance(target, str) or not isinstance(binding, str):
+                    raise Denied('invalid_argument')
+                with gateway.store.db() as db:
+                    expected = self.server.passkeys.binding(db, action, target)
+                    if not secrets.compare_digest(expected, binding):
+                        raise Denied('stale_request')
+                    self.server.passkeys.decide(db, action, target)
+                if action == 'approve':
+                    gateway.execute(target)
+                result = {'action': action, 'target': target}
             elif path == '/api/logout':
                 session['owner'], result = False, {'status': 'signed_out'}
             else:
