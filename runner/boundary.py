@@ -72,17 +72,20 @@ def check(config, identity, boundary, deploy_root):
                 raise Denied('policy', 'custom resource drivers/options are not supported')
             if external and kind == 'networks' and name in boundary['networks']:
                 continue
-            if external or name != project + '_' + key:
-                raise Denied('boundary_exceeded', 'foreign or custom-named resource')
+            if external:
+                raise Denied('boundary_exceeded', 'external resource is not authorized')
             # Prefixes alone are not ownership: check existing Docker resource labels.
             resource = kind[:-1]
             ids = compose.run([compose.DOCKER, resource, 'ls', '--format', '{{.Name}}']).decode().splitlines()
+            if name not in ids and name != project + '_' + key:
+                raise Denied('boundary_exceeded', 'custom resource must already exist and belong to project')
             if name in ids:
                 inspected = json.loads(compose.run([compose.DOCKER, resource, 'inspect', name]))[0]
                 if (inspected.get('Labels') or {}).get(compose.LABEL + 'project') != project:
                     raise Denied('boundary_exceeded', 'existing resource belongs to another project')
-                if resource == 'volume' and (inspected.get('Driver') != 'local' or inspected.get('Options')):
-                    raise Denied('policy', 'existing volume has driver options')
+                expected_driver = 'local' if resource == 'volume' else 'bridge'
+                if inspected.get('Driver') != expected_driver or inspected.get('Options'):
+                    raise Denied('policy', 'existing resource has unsupported driver/options')
     for service in (config.get('services') or {}).values():
         if any(service.get(k) for k in ('provider', 'post_start', 'pre_stop', 'storage_opt', 'sysctls', 'gpus', 'credential_spec')):
             raise Denied('policy', 'host integration or lifecycle hooks are not supported')

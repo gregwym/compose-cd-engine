@@ -13,7 +13,7 @@ from shared.registry import repository
 from shared.wire import Denied
 
 READ = ('projects', 'logs')
-OPERATE = ('read', 'start', 'stop', 'restart', 'up', 'update')
+OPERATE = ('start', 'stop', 'restart', 'up', 'update')
 KINDS = ('read', 'manage', 'elevated', 'operate', 'change', 'create', 'down', 'serve', 'unserve', 'trigger')
 NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,62}')
 TRIGGER_INTERVAL = 1800
@@ -61,12 +61,16 @@ class Gateway:
             self.require_read(agent)
             return self.runner('logs', project=arg(args, 'project', str), service=arg(args, 'service', str, required=False),
                                tail=arg(args, 'tail', int, 100))
-        if op == 'read' and self.store.grant(agent, '*', 'read'):
-            return self.runner('diagnose', project=arg(args, 'project', str))
+        if op == 'read':
+            project = arg(args, 'project', str)
+            # A global diagnostic grant must not shadow an existing project read right.
+            grant = self.store.grant(agent, project)
+            if grant:
+                return self.runner('read', identity=grant['identity'])
+            self.require_read(agent)
+            return self.runner('diagnose', project=project)
         if op in OPERATE:
             grant = self.require_grant(agent, arg(args, 'project', str))
-            if op == 'read':
-                return self.runner('read', identity=grant['identity'])
             services = arg(args, 'services', list, [])
             return {'job': self.job(agent, grant['project'], op,
                                     lambda: self.granted_runner(agent, grant, 'lifecycle', action=op, services=services))}
