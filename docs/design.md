@@ -236,3 +236,27 @@ revocations committed before that check prevent execution, including revocations
 while the request waits for runner's lock. Revocations after authorization cannot
 retroactively cancel the already-authorized command. Ordinary single-response
 clients cannot execute through the socket; the handshake is mandatory.
+
+### Existing project compatibility (2026-10-29)
+
+Project-specific legacy/manage read authorization takes precedence over global
+read: read returns the existing project Compose read response when that project
+grant is active, otherwise the global read grant permits only Docker diagnosis.
+The explicit diagnose operation is unchanged. CLI request read defaults its omitted
+project to *, without changing defaults for other request kinds.
+
+Diagnosis additionally exposes structural bind Source/Propagation, container image
+ID, fixed Compose ownership/identity labels, endpoint IP/gateway/prefix/aliases,
+and network IPAM subnet/range/gateway/auxiliary addresses. It never returns arbitrary
+labels, environment values, command values or driver/IPAM option values. A boolean
+has_driver_options lets callers identify unsupported resource drivers safely.
+
+Existing custom-named volumes and networks may be reused only after Docker inspect
+verifies the exact project ownership label, the expected local/bridge driver and
+empty driver options. A custom name that does not exist is rejected (not created or
+claimed); default project names remain creatable, but existing default-named
+resources require the same ownership and driver checks. External named volumes are
+still rejected, even with ownership labels. Explicitly boundary-approved external
+network attachments retain their existing semantics. Shared namespaces, privileged
+mode, devices and other hard-policy restrictions are unchanged; this compatibility
+fix does not by itself make an unsafe ingress configuration eligible for exec.

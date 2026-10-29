@@ -168,7 +168,7 @@ def main(argv=None):
             if args.wait:
                 result = client.wait_job(result['job'])
         elif args.command == 'request':
-            fields = {'kind': args.kind, 'project': args.project, 'days': args.days,
+            fields = {'kind': args.kind, 'project': args.project or ('*' if args.kind == 'read' else ''), 'days': args.days,
                       'compose': args.compose.read_text() if args.compose else None,
                       'permanent': args.permanent, 'seconds': args.seconds, 'new': args.new,
                       'boundary': json.loads(args.boundary.read_text()) if args.boundary else None,
