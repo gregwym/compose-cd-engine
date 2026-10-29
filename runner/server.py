@@ -28,10 +28,13 @@ def sha(data):
 
 
 class Runner:
-    def __init__(self, projects_root, deploy_root='', health_timeout=120):
+    def __init__(self, projects_root, deploy_root='', health_timeout=120, host_view=()):
         self.root = Path(projects_root).resolve(strict=True)
         self.deploy_root = str(Path(deploy_root).resolve()) if deploy_root else ''
         self.health_timeout = health_timeout
+        # Host directories mounted into the runner at their own paths, so boundary checks can see
+        # (and follow symlinks in) every host path a project mounts.
+        self.views = (str(self.root),) + tuple(str(Path(v).resolve()) for v in host_view if v and Path(v).is_dir())
         self.lock = threading.Lock()
 
     # Identity -------------------------------------------------------------
@@ -82,14 +85,36 @@ class Runner:
             raise Denied('identity_changed', 'Container Manager project identity differs from the approved one')
         return identity
 
-    def authorize_boundary(self, identity, boundary, new=False):
-        self.identity(identity, new=new)
-        return bounds.canonical(boundary, self.deploy_root)
+    def scope(self, identity):
+        return bounds.scope(identity, self.deploy_root, self.views)
 
-    def check_boundary(self, identity, boundary):
+    def authorize_boundary(self, identity, boundary, new=False, compose_text=None, derive=True):
+        """The boundary a manage grant records: what was asked for, plus what the project's current
+        files and an optional proposed compose.yaml need, so approved projects stay manageable."""
+        identity = self.identity(identity, new=new)
+        result = bounds.canonical(boundary, self.deploy_root, self.views)
+        if not derive:
+            return result
+        parts = [result]
+        if not new:
+            parts.append(bounds.derive(self.structure(identity), self.scope(identity)))
+        if compose_text is not None:
+            if not isinstance(compose_text, str) or len(compose_text.encode()) > files.MAX_FILE:
+                raise Denied('invalid_argument', 'compose')
+            env = None if new else files.read(Path(identity['working_dir']) / '.env')
+            bounds.preflight(compose_text)
+            parts.append(bounds.derive(self.render(identity, compose_text.encode(), env, env_resolution=False),
+                                       self.scope(identity)))
+        return bounds.merge(*parts)
+
+    def structure(self, identity):
+        """The rendered configuration as policy sees it: env_file paths kept, not read."""
         for path in identity['config_files']:
             bounds.preflight(files.read(path))
-        return bounds.check(compose.render(identity), identity, boundary, self.deploy_root)
+        return compose.render(identity, env_resolution=False)
+
+    def check_boundary(self, identity, boundary):
+        return bounds.check(self.structure(identity), identity, boundary, self.scope(identity))
 
     # Reads ----------------------------------------------------------------
     def projects(self):
@@ -126,8 +151,8 @@ class Runner:
         if not isinstance(container, str) or not re.fullmatch(r'[a-f0-9]{64}', container):
             raise Denied('invalid_argument', 'full container id required')
         with self.lock:
+            # The grant covers the project as it runs; only host takeover stays out of reach.
             identity = self.identity(identity)
-            self.check_boundary(identity, boundary)
             raw = diagnostics.inspect_project(identity['project'])
             target = next((c for c in raw if c['Id'] == container), None)
             if not target:
@@ -138,24 +163,13 @@ class Runner:
                     labels.get(compose.LABEL + 'project.config_files', '').split(',') != identity['config_files']):
                 raise Denied('identity_changed')
             host = target.get('HostConfig') or {}
-            if (host.get('Privileged') or host.get('CapAdd') or host.get('Devices') or host.get('SecurityOpt') or
-                    host.get('NetworkMode') == 'host' or str(host.get('NetworkMode', '')).startswith('container:') or
-                    host.get('PidMode') or host.get('UTSMode') or host.get('UsernsMode') or
-                    host.get('CgroupnsMode') == 'host' or host.get('DeviceRequests') or host.get('DeviceCgroupRules') or
-                    host.get('IpcMode') not in (None, '', 'private')):
-                raise Denied('policy', 'unsafe running container')
-            for mount in target.get('Mounts') or []:
-                if mount.get('Type') == 'bind':
-                    bounds.source(mount.get('Source'), not mount.get('RW'), boundary)
-                    if policy.forbidden_source(mount.get('Source'), self.deploy_root):
-                        raise Denied('policy', 'unsafe running bind')
-                elif mount.get('Type') == 'volume':
-                    volume = json.loads(compose.run([compose.DOCKER, 'volume', 'inspect', mount['Name']]))[0]
-                    if ((volume.get('Labels') or {}).get(compose.LABEL + 'project') != identity['project'] or
-                            volume.get('Driver') != 'local' or volume.get('Options')):
-                        raise Denied('boundary_exceeded', 'foreign running volume')
-                elif mount.get('Type') != 'tmpfs':
-                    raise Denied('policy', 'unsupported running mount')
+            caps = {str(c).upper().removeprefix('CAP_') for c in host.get('CapAdd') or []}
+            if (host.get('Privileged') or caps & policy.FORBIDDEN_CAPS or
+                    # Not CgroupnsMode: 'host' is Docker's default on cgroup v1 hosts such as DSM 7.
+                    any(host.get(k) == 'host' for k in ('PidMode', 'IpcMode', 'UTSMode', 'UsernsMode')) or
+                    any(policy.forbidden_source(m.get('Source') or '', self.deploy_root)
+                        for m in target.get('Mounts') or [] if m.get('Type') == 'bind')):
+                raise Denied('policy', 'the running container has host-level access no grant can give')
             # The private socket adapter supplies the callback, never a JSON argument.
             if authorize is None:
                 raise Denied('not_authorized', 'execution authorization handshake required')
@@ -189,15 +203,16 @@ class Runner:
         services = self.services(services)
         with self.lock:
             identity = self.identity(identity)
-            if boundary is not None:
-                self.check_boundary(identity, boundary)
+            # start/stop/restart reuse the containers that exist; only (re)creation reads the files.
             if action in ('start', 'stop', 'restart'):
                 compose.compose(identity, action, *services, timeout=600)
                 if action != 'stop':
                     compose.wait_healthy(identity, self.health_timeout, services)
                 return {'status': 'success'}
-            if action in ('up', 'update'):
-                # Files may have changed since the grant; anything that (re)creates containers re-checks the policy.
+            # Files may have changed since the grant; anything that (re)creates containers re-checks them.
+            if boundary is not None:
+                self.check_boundary(identity, boundary)
+            else:
                 found = policy.violations(compose.render(identity), self.deploy_root)
                 if found:
                     raise Denied('policy', found)
@@ -232,18 +247,17 @@ class Runner:
     def down(self, identity, boundary=None):
         with self.lock:
             identity = self.identity(identity)
-            if boundary is not None:
-                self.check_boundary(identity, boundary)
+            # Removes only this project's containers and networks (never volumes); nothing to check.
             compose.compose(identity, 'down', '--remove-orphans', timeout=600)
             return {'status': 'success'}
 
     # Changes --------------------------------------------------------------
-    def render(self, identity, data, env):
+    def render(self, identity, data, env, env_resolution=True):
         with tempfile.TemporaryDirectory(prefix='cd-plan-') as tmp:
             path, env_path = Path(tmp) / 'compose.yaml', Path(tmp) / 'env'
             path.write_bytes(data)
             env_path.write_bytes(env or b'')
-            return compose.render(identity, [path], env_path)
+            return compose.render(identity, [path], env_path, env_resolution=env_resolution)
 
     def plan(self, identity, compose_text=None, env_set=None, env_unset=None, new=False, expect=None, boundary=None):
         identity = self.identity(identity, change=True, new=new)
@@ -259,9 +273,15 @@ class Runner:
         if data == current and new_env == env:
             raise Denied('no_change')
         if boundary is not None:
+            # Before any full render: env_file paths must be inside the boundary before Compose reads them.
             bounds.preflight(data)
-            if current is not None:
-                bounds.preflight(current)
+            try:
+                structure = self.render(identity, data, new_env, env_resolution=False)
+            except Denied as exc:
+                if exc.code != 'docker_failed':
+                    raise
+                raise Denied('invalid_compose', 'docker compose config rejected the file') from None
+            boundary = bounds.check(structure, identity, boundary, self.scope(identity))
         before = None
         if current is not None:
             try:
@@ -279,8 +299,6 @@ class Runner:
         found = policy.violations(after, self.deploy_root)
         if found:
             raise Denied('policy', found)
-        if boundary is not None:
-            boundary = bounds.check(after, identity, boundary, self.deploy_root)
         if expect:
             self.expect_image(before, after, expect)
         diff = ''.join(difflib.unified_diff((current or b'').decode('utf-8', 'replace').splitlines(True),
@@ -361,8 +379,6 @@ class Runner:
             raise Denied('invalid_argument', 'image')
         with self.lock:
             identity = self.identity(identity, change=True)
-            if boundary is not None:
-                self.check_boundary(identity, boundary)
             raw = compose.render(identity, interpolate=False).get('services', {}).get(service, {}).get('image')
             current = compose.render(identity).get('services', {}).get(service, {}).get('image')
             if not raw or not current:
@@ -447,7 +463,8 @@ def main():
     root = os.environ.get('PROJECTS_ROOT')
     if not root:
         raise SystemExit('PROJECTS_ROOT is required')
-    runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')))
+    runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')),
+                    os.environ.get('CD_HOST_VIEW', '').split(':'))
     serve(runner)
 
 

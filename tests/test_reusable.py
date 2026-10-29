@@ -144,46 +144,73 @@ class Boundaries(unittest.TestCase):
         self.temp.cleanup()
 
     def check(self, service=None, **extra):
-        with patch('runner.compose.run', return_value=b''):
+        ctx = boundary.Scope('app', self.identity['working_dir'], '', (str(self.root),))
+        with patch('runner.boundary.inspect', return_value=None):
             return boundary.check({'services': {'web': service or {'image': 'busybox'}}, **extra},
-                                  self.identity, self.boundary, '')
+                                  self.identity, self.boundary, ctx)
 
     def test_mount_ro_and_outside_and_symlink(self):
         mount = {'type': 'bind', 'source': str(self.root), 'target': '/data', 'read_only': True}
         self.check({'volumes': [mount]})
-        for source, ro in [(str(self.root), False), ('/tmp', True)]:
-            with self.assertRaises(Denied):
+        # The project's own directory needs no boundary, even before Docker creates the path.
+        self.check({'volumes': [{**mount, 'source': self.identity['working_dir'] + '/config', 'read_only': False}]})
+        for source, ro, code in [(str(self.root), False, 'boundary_exceeded'), ('/tmp', True, 'not_visible')]:
+            with self.subTest(source=source), self.assertRaises(Denied) as exc:
                 self.check({'volumes': [{**mount, 'source': source, 'read_only': ro}]})
+            self.assertEqual(exc.exception.code, code)
         (self.root / 'link').symlink_to('/etc')
         with self.assertRaises(Denied):
             self.check({'volumes': [{**mount, 'source': str(self.root / 'link')}]})
 
-    def test_resource_and_host_escape_rejections(self):
-        for service in [{'privileged': True}, {'network_mode': 'host'}, {'pid': 'container:foreign'},
-                        {'ipc': 'service:foreign'}, {'devices': ['/dev/mem']}, {'post_start': [{'command': 'id'}]},
-                        {'volumes_from': ['foreign']}, {'build': '.'}, {'cap_add': ['NET_ADMIN']}]:
-            with self.subTest(service=service), self.assertRaises(Denied):
+    def test_host_takeover_is_forbidden_and_host_features_need_the_boundary(self):
+        for service in [{'privileged': True}, {'pid': 'host'}, {'build': '.'}, {'cap_add': ['SYS_ADMIN']},
+                        {'cap_add': ['CAP_DAC_READ_SEARCH']}, {'provider': {'type': 'model'}},
+                        {'post_start': [{'command': 'id', 'privileged': True}]}]:
+            with self.subTest(service=service), self.assertRaises(Denied) as exc:
                 self.check(service)
-        for volumes in [{'data': {'external': True}}, {'data': {'name': 'foreign'}},
-                        {'data': {'driver_opts': {'device': '/etc'}}}]:
+            self.assertEqual(exc.exception.code, 'policy')
+        for service, feature in [({'network_mode': 'host'}, 'network_mode:host'), ({'devices': ['/dev/net/tun']}, 'device:/dev/net/tun'),
+                                 ({'cap_add': ['NET_ADMIN']}, 'cap:NET_ADMIN'), ({'security_opt': ['apparmor=custom']}, 'security_opt:apparmor=custom')]:
+            with self.subTest(service=service):
+                with self.assertRaises(Denied) as exc:
+                    self.check(service)
+                self.assertEqual(exc.exception.code, 'boundary_exceeded')
+                self.boundary['host'] = [feature]
+                self.check(service)
+                del self.boundary['host']
+
+    def test_ordinary_project_configuration_needs_nothing(self):
+        self.check({'security_opt': ['no-new-privileges:true'], 'tmpfs': ['/run'], 'sysctls': {'net.core.somaxconn': 1024},
+                    'post_start': [{'command': 'id'}], 'network_mode': 'service:vpn', 'pid': 'service:vpn',
+                    'volumes_from': ['vpn:ro'], 'cap_drop': ['ALL'], 'read_only': True},
+                   volumes={'cache': {'driver': 'local', 'driver_opts': {'type': 'tmpfs', 'device': 'tmpfs', 'o': 'size=64m'}},
+                            'state': {'name': 'custom-state'}})
+
+    def test_resources_of_other_projects_need_the_boundary(self):
+        with patch('runner.boundary.inspect', return_value=None), self.assertRaises(Denied) as exc:
+            self.check({'network_mode': 'container:foreign'})
+        self.assertEqual(exc.exception.code, 'boundary_exceeded')
+        for volumes in [{'data': {'driver_opts': {'type': 'none', 'o': 'bind', 'device': '/etc'}}}]:
             with self.assertRaises(Denied):
                 self.check(volumes=volumes)
-        with patch('runner.compose.run', side_effect=[b'app_data', b'[{"Labels":{"com.docker.compose.project":"foreign"}}]']):
-            with self.assertRaises(Denied):
-                boundary.check({'volumes': {'data': {}}}, self.identity, self.boundary, '')
 
     def test_external_network_requires_explicit_boundary(self):
-        with self.assertRaises(Denied):
-            self.check(networks={'edge': {'name': 'shared', 'external': True}})
-        self.boundary['networks'] = ['shared']
-        self.check(networks={'edge': {'name': 'shared', 'external': True}})
+        with patch('runner.boundary.inspect', return_value={'Driver': 'bridge', 'Labels': {}}):
+            ctx = boundary.Scope('app', self.identity['working_dir'], '', (str(self.root),))
+            config = {'networks': {'edge': {'name': 'shared', 'external': True}}}
+            with self.assertRaises(Denied):
+                boundary.check(config, self.identity, self.boundary, ctx)
+            self.boundary['networks'] = ['shared']
+            boundary.check(config, self.identity, self.boundary, ctx)
 
     def test_preflight_blocks_hidden_file_loading(self):
-        for text in ['include: /etc/passwd', 'services: {web: {"env_file": /etc/passwd}}',
-                     'services: {web: {extends: {file: ../other}}}', 'services: &alias {}',
-                     'services: {web: {build: .}}']:
-            with self.assertRaises(Denied):
+        for text in ['include: /etc/passwd', 'services: {web: {extends: {file: ../other}}}',
+                     'services: {web: {label_file: /etc/passwd}}', 'services: {"web": {"inc\\u006cude": 1}}',
+                     'services: !!map {}']:
+            with self.subTest(text=text), self.assertRaises(Denied):
                 boundary.preflight(text)
+        boundary.preflight('x-common: &common {restart: always}\nservices: {web: {<<: *common, env_file: .env, secrets: [s]}}\n'
+                           'secrets: {s: {file: ./s.txt}}')
 
     def test_exec_argv_validation(self):
         execution.validate(['sh', '-c', 'echo explicit shell'], 30)
@@ -202,7 +229,8 @@ class Boundaries(unittest.TestCase):
         target = {'Id': 'a' * 64, 'Config': {'Labels': {
             'com.docker.compose.project': 'app', 'com.docker.compose.project.working_dir': str(wd),
             'com.docker.compose.project.config_files': str(wd / 'compose.yaml')}}, 'HostConfig': {}}
-        with patch.object(runner, 'check_boundary'), patch('runner.compose.observed_identity', return_value=self.identity),              patch('runner.diagnostics.inspect_project', return_value=[target]):
+        with patch('runner.compose.observed_identity', return_value=self.identity), \
+                patch('runner.diagnostics.inspect_project', return_value=[target]):
             with self.assertRaises(Denied) as exc:
                 runner.exec(self.identity, self.boundary, 'b' * 64, ['id'], int(time.time()) + 60)
             self.assertEqual(exc.exception.code, 'target_mismatch')

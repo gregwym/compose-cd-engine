@@ -221,8 +221,10 @@ class Gateway:
             detail = {'identity': {}, 'lifetime': self.reusable_lifetime(args), 'scope': 'read', 'boundary': {}}
         elif kind == 'manage':
             identity = self.identity(agent, project) if not args.get('new') else self.new_identity(project)
+            # The runner adds what the current files (and an optional proposed compose.yaml) need, so the
+            # owner approves the project's whole boundary once instead of one feature at a time.
             boundary = self.runner('authorize_boundary', identity=identity, boundary=arg(args, 'boundary', dict, {}),
-                                   new=bool(args.get('new')))
+                                   new=bool(args.get('new')), compose_text=arg(args, 'compose', str, required=False))
             detail = {'identity': identity, 'lifetime': self.reusable_lifetime(args), 'scope': 'manage',
                       'boundary': boundary, 'new': bool(args.get('new'))}
         elif kind == 'elevated':
@@ -385,7 +387,7 @@ class Gateway:
                     raise Denied('not_authorized', 'manage grant changed')
             if kind == 'manage':
                 self.runner('authorize_boundary', identity=detail['identity'], boundary=detail['boundary'],
-                            new=detail.get('new', False))
+                            new=detail.get('new', False), derive=False)
             with self.store.db() as db:
                 outcome['grant'] = self.store.add_grant(db, agent, project, detail['identity'], detail['lifetime'], rid,
                                                        scope=kind, boundary=detail['boundary'])
