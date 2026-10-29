@@ -31,11 +31,14 @@ jobs:
           python3 - <<'PY'
           import json
           s = json.load(open('/tmp/synology.json'))['services']
-          assert set(s) == {'tailscale', 'gateway', 'runner'}
+          assert set(s) == {'prepare', 'tailscale', 'gateway', 'runner'}
+          assert s['prepare']['network_mode'] == 'none' and s['prepare']['restart'] == 'no'
+          assert all(s[name]['depends_on']['prepare']['condition'] == 'service_completed_successfully'
+                     for name in ('tailscale', 'gateway', 'runner'))
           assert s['runner']['network_mode'] == 'none'
           assert s['gateway']['network_mode'] == 'service:tailscale'
           sock = lambda name: any(v.get('source') == '/var/run/docker.sock' for v in s[name].get('volumes', []))
-          assert sock('runner') and not sock('gateway') and not sock('tailscale')
+          assert sock('runner') and not sock('gateway') and not sock('tailscale') and not sock('prepare')
           assert {'type': 'tmpfs', 'target': '/volume1/docker/deployer'}.items() <= next(
               v for v in s['runner']['volumes'] if v['type'] == 'tmpfs').items()
           assert all(v['source'].startswith('/volume1/docker/deployer/') for v in s['gateway']['volumes'])
@@ -68,6 +71,11 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test python3 -m client.cdctl --help
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test docker compose version
           docker run --rm --network none --read-only --cap-drop ALL compose-cd-engine:test cosign version
+      - name: First deployment of the Synology Compose file
+        run: |
+          docker tag compose-cd-engine:test ghcr.io/kurisu-agi/compose-cd-engine:edge
+          sudo tests/first_deploy.sh empty
+          sudo tests/first_deploy.sh dsm
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         if: github.event_name != 'pull_request'
         with:
