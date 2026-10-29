@@ -1,5 +1,7 @@
 """Who may do what: agent operations, owner approvals, jobs and triggers."""
 import re
+import json
+import socket
 import secrets
 import threading
 import time
@@ -130,9 +132,47 @@ class Gateway:
         def work():
             self.current_grant(agent, elevated)
             self.current_grant(agent, manage)
-            return self.runner('exec', identity=manage['identity'], boundary=manage['boundary'],
-                               container=container, argv=argv, timeout=timeout, expires=elevated['expires'])
+            return self.runner_exec(agent, manage, elevated, {
+                'identity': manage['identity'], 'boundary': manage['boundary'], 'container': container,
+                'argv': argv, 'timeout': timeout, 'expires': elevated['expires']})
         return {'job': self.job(agent, project, 'exec', work)}
+
+    def runner_exec(self, agent, manage, elevated, args):
+        """Reauthorize on the original socket after runner obtains its execution lock.
+
+        The challenge binds the entire immutable operation. No additional server,
+        network endpoint, runner database access or persistent ticket is needed.
+        """
+        request = {'op': 'exec', 'args': args}
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1800)
+                sock.connect(self.runner_socket)
+                sock.sendall(wire.canonical(request).encode() + b'\n')
+                ready = json.loads(wire.read_line(sock))
+                if ready.get('phase') != 'authorize_exec':
+                    if not ready.get('ok'):
+                        raise Denied(ready.get('error', 'failed'), ready.get('detail'))
+                    raise Denied('runner_protocol', 'execution authorization handshake required')
+                if ready.get('binding') != wire.digest(request) or not isinstance(ready.get('challenge'), str):
+                    raise Denied('runner_protocol')
+                # This is deliberately AFTER readiness, not merely before dispatch.
+                # One transaction gives agent + both grants a single authorization point.
+                with self.store.db() as db:
+                    active = db.execute("SELECT 1 FROM agents WHERE id=? AND status='active'", (agent,)).fetchone()
+                    grants = db.execute("SELECT id FROM grants WHERE id IN (?,?) AND agent=? AND status='active' "
+                                        "AND (expires IS NULL OR expires>?)",
+                                        (manage['id'], elevated['id'], agent, now())).fetchall()
+                    if not active or {g['id'] for g in grants} != {manage['id'], elevated['id']}:
+                        raise Denied('not_authorized', 'grant expired, replaced or revoked')
+                sock.sendall(wire.canonical({'phase': 'authorize_exec', 'challenge': ready['challenge'],
+                                            'binding': ready['binding'], 'allow': True}).encode() + b'\n')
+                reply = json.loads(wire.read_line(sock))
+        except (OSError, ValueError) as exc:
+            raise Denied('runner_unavailable', type(exc).__name__) from None
+        if not reply.get('ok'):
+            raise Denied(reply.get('error', 'failed'), reply.get('detail'))
+        return reply['result']
 
     def require_grant(self, agent, project):
         grant = self.store.grant(agent, project)

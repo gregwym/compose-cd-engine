@@ -8,6 +8,7 @@ import json
 import os
 import re
 import socket
+import secrets
 import tempfile
 import threading
 import time
@@ -120,7 +121,7 @@ class Runner:
     def diagnose(self, project):
         return diagnostics.diagnose(project)
 
-    def exec(self, identity, boundary, container, argv, expires, timeout=30):
+    def exec(self, identity, boundary, container, argv, expires, timeout=30, authorize=None):
         execution.validate(argv, timeout)
         if not isinstance(container, str) or not re.fullmatch(r'[a-f0-9]{64}', container):
             raise Denied('invalid_argument', 'full container id required')
@@ -155,6 +156,10 @@ class Runner:
                         raise Denied('boundary_exceeded', 'foreign running volume')
                 elif mount.get('Type') != 'tmpfs':
                     raise Denied('policy', 'unsupported running mount')
+            # The private socket adapter supplies the callback, never a JSON argument.
+            if authorize is None:
+                raise Denied('not_authorized', 'execution authorization handshake required')
+            authorize()
             if type(expires) is not int or expires <= time.time():
                 raise Denied('not_authorized', 'elevation expired')
             timeout = min(timeout, max(1, int(expires - time.time())))
@@ -405,7 +410,29 @@ def session(runner, connection):
             connection.settimeout(30)
             request = json.loads(read_line(connection))
             connection.settimeout(None)
-            reply = {'ok': True, 'result': handle(runner, request)}
+            if request.get('op') == 'exec':
+                args = request.get('args')
+                if not isinstance(args, dict) or 'authorize' in args:
+                    raise Denied('invalid_argument')
+                binding = digest(request)
+                def authorize():
+                    challenge = secrets.token_urlsafe(24)
+                    connection.settimeout(5)
+                    connection.sendall(canonical({'phase': 'authorize_exec', 'challenge': challenge,
+                                                   'binding': binding}).encode() + b'\n')
+                    try:
+                        decision = json.loads(read_line(connection, limit=4096))
+                    except (OSError, ValueError):
+                        raise Denied('not_authorized', 'authorization unavailable') from None
+                    finally:
+                        connection.settimeout(None)
+                    if decision != {'phase': 'authorize_exec', 'challenge': challenge,
+                                    'binding': binding, 'allow': True}:
+                        raise Denied('not_authorized', 'invalid execution authorization')
+                result = runner.exec(**args, authorize=authorize)
+            else:
+                result = handle(runner, request)
+            reply = {'ok': True, 'result': result}
         except Denied as exc:
             reply = {'ok': False, 'error': exc.code, 'detail': exc.detail}
         except Exception as exc:  # Never crash the runner on one request.

@@ -87,7 +87,8 @@ class Grants(unittest.TestCase):
         self.gateway.job = lambda actor, project, op, work: works.append(work) or 'job'
         self.call('exec', project='app', container='a' * 64, argv=['echo', 'hello'])
         self.call('exec', project='app', container='a' * 64, argv=['echo', 'again'])
-        works[0]()
+        with patch.object(self.gateway, 'runner_exec', return_value={'status': 'success'}):
+            works[0]()
         with self.store.db() as db:
             db.execute("UPDATE grants SET status='revoked' WHERE id=?", (elevated['id'],))
         with self.assertRaises(Denied):
@@ -206,5 +207,5 @@ class Boundaries(unittest.TestCase):
                 runner.exec(self.identity, self.boundary, 'b' * 64, ['id'], int(time.time()) + 60)
             self.assertEqual(exc.exception.code, 'target_mismatch')
             with self.assertRaises(Denied) as exc:
-                runner.exec(self.identity, self.boundary, 'a' * 64, ['id'], int(time.time()) - 1)
+                runner.exec(self.identity, self.boundary, 'a' * 64, ['id'], int(time.time()) - 1, authorize=lambda: None)
             self.assertEqual(exc.exception.code, 'not_authorized')

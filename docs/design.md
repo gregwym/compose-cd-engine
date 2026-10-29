@@ -208,3 +208,19 @@ GitHub validating webhook deliveries/best practices. Explicit resource names are
 not project-scoped, hence default-name AND ownership-label checks.
 
 Primary references: https://docs.docker.com/reference/cli/docker/container/exec/ ; https://docs.docker.com/reference/compose-file/volumes/ ; https://docs.docker.com/reference/compose-file/networks/ ; https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
+
+### Exec readiness handshake
+
+Exec uses a two-phase exchange on the existing root-only runner Unix connection.
+After acquiring its execution lock and validating live container identity/mounts,
+runner sends a random challenge and hash of the exact request. Gateway rechecks the
+active agent, exact manage grant and exact elevated grant against SQLite, then
+acknowledges that challenge and hash. Runner accepts only that same-connection
+acknowledgment within five seconds, checks expiry again, and dispatches exec.
+Disconnect, timeout, malformed/replayed/mismatched acknowledgments fail closed.
+No database is mounted into runner and no additional listening endpoint is created.
+The successful readiness authorization is the execution authorization point:
+revocations committed before that check prevent execution, including revocations
+while the request waits for runner's lock. Revocations after authorization cannot
+retroactively cancel the already-authorized command. Ordinary single-response
+clients cannot execute through the socket; the handshake is mandatory.

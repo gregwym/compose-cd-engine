@@ -22,13 +22,13 @@ class ReusableDocker(RunnerDocker):
         diagnostic = self.runner.diagnose(identity['project'])
         container = diagnostic['containers'][0]['id']
         for word in ('hello', 'again'):
-            result = self.runner.exec(identity, boundary, container, ['echo', word], int(time.time()) + 30)
+            result = self.runner.exec(identity, boundary, container, ['echo', word], int(time.time()) + 30, authorize=lambda: None)
             self.assertEqual(result['status'], 'success', result)
             self.assertIn(word, result['output'])
-        result = self.runner.exec(identity, boundary, container, ['sleep', '20'], int(time.time()) + 30, timeout=1)
+        result = self.runner.exec(identity, boundary, container, ['sleep', '20'], int(time.time()) + 30, timeout=1, authorize=lambda: None)
         self.assertTrue(result['timed_out'], result)
         result = self.runner.exec(identity, boundary, container, ['sh', '-c', 'yes output | head -c 100000'],
-                                  int(time.time()) + 30)
+                                  int(time.time()) + 30, authorize=lambda: None)
         self.assertTrue(result['truncated'])
         self.assertLessEqual(len(result['output'].encode()), 65536)
 
