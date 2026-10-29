@@ -1,5 +1,7 @@
 """Who may do what: agent operations, owner approvals, jobs and triggers."""
 import re
+import json
+import socket
 import secrets
 import threading
 import time
@@ -12,7 +14,7 @@ from shared.wire import Denied
 
 READ = ('projects', 'logs')
 OPERATE = ('read', 'start', 'stop', 'restart', 'up', 'update')
-KINDS = ('operate', 'change', 'create', 'down', 'serve', 'unserve', 'trigger')
+KINDS = ('read', 'manage', 'elevated', 'operate', 'change', 'create', 'down', 'serve', 'unserve', 'trigger')
 NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,62}')
 TRIGGER_INTERVAL = 1800
 
@@ -45,20 +47,29 @@ class Gateway:
             return self.pair(agent, value['public_key'], args)
         self.store.active_agent(agent, value['public_key'])
         if op == 'whoami':
-            return {'agent': agent, 'grants': [{'project': g['project'], 'expires': g['expires']}
+            return {'agent': agent, 'grants': [{k: g[k] for k in ('id', 'project', 'scope', 'boundary', 'expires')}
                                                for g in self.store.grants(agent)]}
         if op == 'projects':
+            self.require_read(agent)
             return self.projects(agent)
+        if op == 'diagnose':
+            self.require_read(agent)
+            return self.runner('diagnose', project=arg(args, 'project', str))
+        if op == 'exec':
+            return self.execute_argv(agent, args)
         if op == 'logs':
+            self.require_read(agent)
             return self.runner('logs', project=arg(args, 'project', str), service=arg(args, 'service', str, required=False),
                                tail=arg(args, 'tail', int, 100))
+        if op == 'read' and self.store.grant(agent, '*', 'read'):
+            return self.runner('diagnose', project=arg(args, 'project', str))
         if op in OPERATE:
             grant = self.require_grant(agent, arg(args, 'project', str))
             if op == 'read':
                 return self.runner('read', identity=grant['identity'])
             services = arg(args, 'services', list, [])
             return {'job': self.job(agent, grant['project'], op,
-                                    lambda: self.runner('lifecycle', identity=grant['identity'], action=op, services=services))}
+                                    lambda: self.granted_runner(agent, grant, 'lifecycle', action=op, services=services))}
         if op == 'request':
             return self.request(agent, args)
         if op == 'request_status':
@@ -84,6 +95,84 @@ class Gateway:
             return {'status': 'paired', 'agent': agent}
         return {'status': 'pending', 'agent': agent, 'fingerprint': fingerprint(public_key),
                 'approval_url': f"{self.origin}/p/{row['token']}", 'expires': row['expires']}
+
+    def require_read(self, agent):
+        grant = self.store.grant(agent, '*', 'read')
+        if not grant:
+            raise Denied('not_authorized', 'request kind=read first')
+        return grant
+
+    def current_grant(self, agent, grant):
+        row = self.store.agent(agent)
+        current = self.store.grant(agent, grant['project'], grant['scope'])
+        if not row or row['status'] != 'active' or not current or current['id'] != grant['id']:
+            raise Denied('not_authorized', 'grant expired, replaced or revoked')
+        return current
+
+    def granted_runner(self, agent, grant, op, **args):
+        current = self.current_grant(agent, grant)
+        if current['scope'] == 'manage':
+            args['boundary'] = current['boundary']
+        if op != 'apply':
+            args['identity'] = current['identity']
+        return self.runner(op, **args)
+
+    def execute_argv(self, agent, args):
+        project = arg(args, 'project', str)
+        manage = self.store.grant(agent, project, 'manage')
+        elevated = self.store.grant(agent, project, 'elevated')
+        if not manage or not elevated or elevated['boundary'].get('manage_grant') != manage['id']:
+            raise Denied('not_authorized', 'active manage and finite elevated grants required')
+        argv, container = arg(args, 'argv', list), arg(args, 'container', str)
+        timeout = arg(args, 'timeout', int, 30)
+        if (not 1 <= len(argv) <= 64 or any(not isinstance(a, str) or not a or '\x00' in a or len(a) > 4096 for a in argv)
+                or sum(map(len, argv)) > 16384 or argv[0].startswith('-') or not 1 <= timeout <= 120
+                or not re.fullmatch(r'[a-f0-9]{64}', container)):
+            raise Denied('invalid_argument', 'argv/container/timeout')
+        def work():
+            self.current_grant(agent, elevated)
+            self.current_grant(agent, manage)
+            return self.runner_exec(agent, manage, elevated, {
+                'identity': manage['identity'], 'boundary': manage['boundary'], 'container': container,
+                'argv': argv, 'timeout': timeout, 'expires': elevated['expires']})
+        return {'job': self.job(agent, project, 'exec', work)}
+
+    def runner_exec(self, agent, manage, elevated, args):
+        """Reauthorize on the original socket after runner obtains its execution lock.
+
+        The challenge binds the entire immutable operation. No additional server,
+        network endpoint, runner database access or persistent ticket is needed.
+        """
+        request = {'op': 'exec', 'args': args}
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1800)
+                sock.connect(self.runner_socket)
+                sock.sendall(wire.canonical(request).encode() + b'\n')
+                ready = json.loads(wire.read_line(sock))
+                if ready.get('phase') != 'authorize_exec':
+                    if not ready.get('ok'):
+                        raise Denied(ready.get('error', 'failed'), ready.get('detail'))
+                    raise Denied('runner_protocol', 'execution authorization handshake required')
+                if ready.get('binding') != wire.digest(request) or not isinstance(ready.get('challenge'), str):
+                    raise Denied('runner_protocol')
+                # This is deliberately AFTER readiness, not merely before dispatch.
+                # One transaction gives agent + both grants a single authorization point.
+                with self.store.db() as db:
+                    active = db.execute("SELECT 1 FROM agents WHERE id=? AND status='active'", (agent,)).fetchone()
+                    grants = db.execute("SELECT id FROM grants WHERE id IN (?,?) AND agent=? AND status='active' "
+                                        "AND (expires IS NULL OR expires>?)",
+                                        (manage['id'], elevated['id'], agent, now())).fetchall()
+                    if not active or {g['id'] for g in grants} != {manage['id'], elevated['id']}:
+                        raise Denied('not_authorized', 'grant expired, replaced or revoked')
+                sock.sendall(wire.canonical({'phase': 'authorize_exec', 'challenge': ready['challenge'],
+                                            'binding': ready['binding'], 'allow': True}).encode() + b'\n')
+                reply = json.loads(wire.read_line(sock))
+        except (OSError, ValueError) as exc:
+            raise Denied('runner_unavailable', type(exc).__name__) from None
+        if not reply.get('ok'):
+            raise Denied(reply.get('error', 'failed'), reply.get('detail'))
+        return reply['result']
 
     def require_grant(self, agent, project):
         grant = self.store.grant(agent, project)
@@ -118,8 +207,29 @@ class Gateway:
         kind = arg(args, 'kind', str)
         if kind not in KINDS:
             raise Denied('invalid_argument', 'kind')
-        project = arg(args, 'project', str, '' if kind == 'unserve' else None)
-        if kind == 'operate':
+        project = arg(args, 'project', str, '*' if kind == 'read' else ('' if kind == 'unserve' else None))
+        manage = self.store.grant(agent, project, 'manage')
+        if manage and kind in ('change', 'create', 'down'):
+            return self.managed_change(agent, manage, kind, args)
+        if kind == 'read':
+            if project != '*':
+                raise Denied('invalid_argument', 'read scope is environment-wide (*)')
+            detail = {'identity': {}, 'lifetime': self.reusable_lifetime(args), 'scope': 'read', 'boundary': {}}
+        elif kind == 'manage':
+            identity = self.identity(agent, project) if not args.get('new') else self.new_identity(project)
+            boundary = self.runner('authorize_boundary', identity=identity, boundary=arg(args, 'boundary', dict, {}),
+                                   new=bool(args.get('new')))
+            detail = {'identity': identity, 'lifetime': self.reusable_lifetime(args), 'scope': 'manage',
+                      'boundary': boundary, 'new': bool(args.get('new'))}
+        elif kind == 'elevated':
+            if not manage:
+                raise Denied('not_authorized', 'manage grant required first')
+            seconds = arg(args, 'seconds', int, 900)
+            if not 1 <= seconds <= 3600:
+                raise Denied('invalid_argument', 'seconds must be 1..3600')
+            detail = {'identity': manage['identity'], 'lifetime': seconds, 'scope': 'elevated',
+                      'boundary': {'manage_grant': manage['id']}}
+        elif kind == 'operate':
             detail = {'identity': self.identity(agent, project), 'lifetime': self.lifetime(args)}
         elif kind == 'change':
             detail = {'plan': self.runner('plan', identity=self.identity(agent, project),
@@ -149,6 +259,30 @@ class Gateway:
             detail = self.trigger_detail(agent, project, args)
         rid = self.store.create_request(agent, project, kind, detail)
         return self.public(self.store.request(rid), owner=False)
+
+    def new_identity(self, project):
+        if not NAME.fullmatch(project):
+            raise Denied('invalid_argument', 'project')
+        root = self.runner('projects')['root']
+        wd = f'{root}/{project}'
+        return {'project': project, 'working_dir': wd, 'config_files': [wd + '/compose.yaml']}
+
+    def managed_change(self, agent, grant, kind, args):
+        self.current_grant(agent, grant)
+        if kind == 'down':
+            return {'job': self.job(agent, grant['project'], kind,
+                                    lambda: self.granted_runner(agent, grant, 'down'))}
+        plan = self.runner('plan', identity=grant['identity'], boundary=grant['boundary'],
+                           compose_text=arg(args, 'compose', str, required=kind == 'create'),
+                           env_set=self.env_set(args), env_unset=arg(args, 'env_unset', list, []), new=kind == 'create')
+        return {'job': self.job(agent, grant['project'], kind,
+                                lambda: self.granted_runner(agent, grant, 'apply', plan=plan))}
+
+    @staticmethod
+    def reusable_lifetime(args):
+        if args.get('permanent') is True:
+            return None
+        return Gateway.lifetime(args)
 
     @staticmethod
     def lifetime(args):
@@ -182,6 +316,7 @@ class Gateway:
 
     def trigger_detail(self, agent, project, args):
         identity = self.identity(agent, project)
+        manage = self.store.grant(agent, project, 'manage')
         service = arg(args, 'service', str)
         config = triggers.validate({k: args[k] for k in ('repository', 'workflow', 'branch', 'image', 'platform') if k in args})
         listed = next((p for p in self.runner('projects')['projects'] if p['project'] == project), None)
@@ -191,7 +326,21 @@ class Gateway:
         if repository(current) != repository(config['image']):
             raise Denied('repository_mismatch', repository(current))
         return {'identity': identity, 'service': service, 'config': config,
-                'signer': triggers.identity(config)}
+                'signer': triggers.identity(config),
+                **({'manage_grant': manage['id'], 'agent': agent} if manage else {})}
+
+    def public_preview(self, item):
+        # Capability URL exposes only an allowlisted, value-free review projection.
+        detail = item['detail']
+        safe = {k: detail[k] for k in ('identity', 'lifetime', 'scope', 'boundary', 'new', 'service', 'signer', 'config', 'url', 'target_port', 'https_port') if k in detail}
+        if 'plan' in detail:
+            plan = detail['plan']
+            safe['plan'] = {'identity': plan['identity'], 'new': plan.get('new', False),
+                            'diff': plan.get('safe_diff', 'Legacy preview withheld; submit a new request.'),
+                            'highlights': [], 'env': plan.get('env', {}), 'services': plan.get('services', []),
+                            'redacted': 'safe_diff' not in plan}
+        return {**{k: item[k] for k in ('id', 'kind', 'project', 'agent', 'status', 'created', 'expires')},
+                'detail': safe, 'outcome': None, 'approval_url': f"{self.origin}/r/{item['id']}"}
 
     def public(self, item, owner):
         detail = dict(item['detail'])
@@ -225,6 +374,17 @@ class Gateway:
         rid, kind, detail = item['id'], item['kind'], item['detail']
         agent, project = item['agent'], item['project']
         outcome = {}
+        if kind in ('read', 'manage', 'elevated'):
+            if kind == 'elevated':
+                current = self.store.grant(agent, project, 'manage')
+                if not current or current['id'] != detail['boundary']['manage_grant']:
+                    raise Denied('not_authorized', 'manage grant changed')
+            if kind == 'manage':
+                self.runner('authorize_boundary', identity=detail['identity'], boundary=detail['boundary'],
+                            new=detail.get('new', False))
+            with self.store.db() as db:
+                outcome['grant'] = self.store.add_grant(db, agent, project, detail['identity'], detail['lifetime'], rid,
+                                                       scope=kind, boundary=detail['boundary'])
         if kind in ('operate', 'create'):
             identity = detail['identity'] if kind == 'operate' else detail['plan']['identity']
             with self.store.db() as db:
@@ -247,7 +407,7 @@ class Gateway:
                 db.execute("UPDATE triggers SET status='replaced' WHERE project=? AND service=? AND status='active'",
                            (project, detail['service']))
                 db.execute('INSERT INTO triggers VALUES (?,?,?,?,?,?,?,?,?,?)',
-                           (tid, project, detail['service'], wire.canonical(detail['config']),
+                           (tid, project, detail['service'], wire.canonical({**detail['config'], **({'manage_grant': detail['manage_grant'], 'agent': agent} if detail.get('manage_grant') else {})}),
                             wire.canonical(detail['identity']), secrets.token_urlsafe(32), None, 'active', rid, now()))
             outcome['trigger'] = tid
             self.wake.set()
@@ -295,6 +455,7 @@ class Gateway:
         if not row:
             raise Denied('not_found')
         if triggers.webhook(body, signature, event, row['secret'], self.store.decode(row)['config']):
+            self.store.nonce('hook:' + tid + ':' + wire.digest(body), ttl=7 * 86400)
             self.wake.set()
             return True
         return False
@@ -308,13 +469,20 @@ class Gateway:
                 continue
             state = {**last, 'checked': now(), 'error': None}
             try:
+                manage = None
+                if row['config'].get('manage_grant'):
+                    manage = self.store.grant(row['config']['agent'], row['project'], 'manage')
+                    if not manage or manage['id'] != row['config']['manage_grant']:
+                        raise Denied('not_authorized')
+                    self.current_grant(row['config']['agent'], manage)
                 commit, image = triggers.latest(row['config'])
                 state['commit'] = commit
                 if image != last.get('image'):
                     jid = self.store.create_job('trigger:' + row['id'], row['project'], 'update_image')
                     self.store.update_job(jid, 'running')
                     try:
-                        result = self.runner('update_image', identity=row['identity'], service=row['service'], image=image)
+                        result = (self.granted_runner(row['config']['agent'], manage, 'update_image', service=row['service'], image=image)
+                                  if manage else self.runner('update_image', identity=row['identity'], service=row['service'], image=image))
                         self.store.update_job(jid, result.get('status', 'success'), result)
                         if result.get('status') in ('success', 'no_change'):
                             state['image'] = image

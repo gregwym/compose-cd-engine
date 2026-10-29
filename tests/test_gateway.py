@@ -36,15 +36,17 @@ class Gateway(unittest.TestCase):
         self.assertEqual(page['fingerprint'], pending['fingerprint'])
         self.assertEqual(self.agent.error('projects'), 'not_paired')
 
-    def test_pairing_grants_read_only(self):
+    def test_pairing_requires_explicit_read_grant(self):
         self.stack.pair()
+        self.assertEqual(self.agent.error('projects'), 'not_authorized')
+        self.stack.approve(self.agent('request', kind='read'))
         self.assertEqual(self.agent('pair', label='openclaw')['status'], 'paired')
         listed = self.agent('projects')['projects']
         self.assertEqual(listed[0]['project'], 'app')
         self.assertIsNone(listed[0]['operate_until'])
         self.assertEqual(self.agent('logs', project='app')['logs'], {'app-web-1': 'hello\n'})
         self.assertEqual(self.agent.error('restart', project='app'), 'not_authorized')
-        self.assertEqual(self.agent.error('read', project='app'), 'not_authorized')
+        self.assertNotIn('compose', self.agent('read', project='app'))
         self.assertNotIn('lifecycle', self.stack.runner.ops())
 
     def test_operate_grant_allows_lifecycle_with_approved_identity(self):
@@ -85,6 +87,50 @@ class Gateway(unittest.TestCase):
         self.assertEqual(result['error'], 'stale_request')
         self.assertEqual(self.agent('request_status', id=request['id'])['status'], 'pending')
 
+    def test_session_decision_requires_auth_and_exact_preview(self):
+        self.stack.pair()
+        request = self.agent('request', kind='operate', project='app')
+        browser = self.fresh()
+        # No cookie or login is needed for a link preview.
+        browser.cookie = None
+        status, preview = browser.request('GET', '/api/request/' + request['id'])
+        self.assertEqual(status, 200)
+        self.assertIn('binding', preview)
+        browser.session()
+        body = {'action': 'approve', 'target': request['id'], 'binding': preview['binding']}
+        self.assertEqual(browser.request('POST', '/api/decision', body)[1]['error'], 'sign_in_required')
+        self.assertEqual(browser.passkey('login')[0], 200)
+        self.assertEqual(browser.request('POST', '/api/decision', {**body, 'binding': 'wrong'})[1]['error'], 'stale_request')
+        self.assertEqual(browser.request('POST', '/api/decision', body, origin='https://evil.example')[1]['error'], 'wrong_origin')
+        csrf = browser.csrf
+        browser.csrf = 'wrong'
+        self.assertEqual(browser.request('POST', '/api/decision', body)[1]['error'], 'csrf')
+        browser.csrf = csrf
+        self.assertEqual(browser.request('POST', '/api/decision', body)[0], 200)
+        self.assertEqual(browser.request('POST', '/api/decision', body)[1]['error'], 'stale_request')
+        # The authenticated owner can decide another request without another ceremony.
+        second = self.agent('request', kind='operate', project='app')
+        preview = browser.request('GET', '/api/request/' + second['id'])[1]
+        self.assertEqual(browser.request('POST', '/api/decision', {
+            'action': 'deny', 'target': second['id'], 'binding': preview['binding']})[0], 200)
+        self.assertEqual(self.stack.store.request(second['id'])['status'], 'denied')
+
+    def test_session_decision_rejects_changed_preview_and_expiration(self):
+        self.stack.pair()
+        request = self.agent('request', kind='operate', project='app')
+        browser = self.stack.browser
+        preview = browser.request('GET', '/api/request/' + request['id'])[1]
+        body = {'action': 'approve', 'target': request['id'], 'binding': preview['binding']}
+        with self.stack.store.db() as db:
+            db.execute('UPDATE requests SET detail=? WHERE id=?', ('{"identity":{},"lifetime":1}', request['id']))
+        self.assertEqual(browser.request('POST', '/api/decision', body)[1]['error'], 'stale_request')
+        preview = browser.request('GET', '/api/request/' + request['id'])[1]
+        body['binding'] = preview['binding']
+        with self.stack.store.db() as db:
+            db.execute('UPDATE requests SET expires=0 WHERE id=?', (request['id'],))
+        self.assertEqual(browser.request('POST', '/api/decision', body)[1]['error'], 'stale_request')
+        self.assertEqual(self.stack.store.grants(), [])
+
     def test_wrong_passkey_and_wrong_origin_fail(self):
         from helpers import Authenticator
         self.stack.pair()
@@ -112,11 +158,11 @@ class Gateway(unittest.TestCase):
             self.assertNotIn(key, request['detail']['plan'])
             self.assertNotIn(key, self.agent('request_status', id=request['id'])['detail']['plan'])
         self.assertIn('diff', self.stack.browser.request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
-        # The agent knows the id: without an owner session the page endpoint is as redacted as the agent API.
+        # Anonymous and owner HTTP previews share the same sanitized projection.
         anonymous = self.fresh().request('GET', '/api/request/' + request['id'])[1]['detail']['plan']
         self.assertTrue(anonymous['redacted'])
-        self.assertNotIn('diff', anonymous)
-        self.assertNotIn('highlights', anonymous)
+        self.assertIn('diff', anonymous)
+        self.assertNotIn('compose', anonymous)
         status, page = self.stack.browser.request('GET', '/api/request/' + request['id'])
         self.assertNotIn('secret-value', json.dumps(page))
         decided = self.stack.approve(request)
@@ -126,12 +172,39 @@ class Gateway(unittest.TestCase):
         self.assertEqual(args['plan']['env_set'], {'TOKEN': 'secret-value'})
         self.assertEqual(self.agent.error('restart', project='app'), 'not_authorized')
 
+    def test_anonymous_safe_diff_is_reviewable_and_never_returns_payload(self):
+        from shared.preview import diff
+        self.stack.pair()
+        request = self.agent('request', kind='change', project='app', compose='services: {}')
+        before = {'services': {'web': {'image': 'app:old', 'environment': {'TOKEN': 'old-secret'},
+                                       'command': 'echo private-command'}}}
+        after = {'services': {'web': {'image': 'app:new', 'environment': {'TOKEN': 'new-secret'},
+                                      'ports': [{'target': 80, 'published': '8080'}]}}}
+        item = self.stack.store.request(request['id'])
+        item['detail']['plan']['safe_diff'] = diff(before, after)
+        with self.stack.store.db() as db:
+            db.execute('UPDATE requests SET detail=? WHERE id=?', (json.dumps(item['detail']), request['id']))
+        anonymous = self.fresh()
+        anonymous.cookie = None
+        status, page = anonymous.request('GET', '/api/request/' + request['id'])
+        self.assertEqual(status, 200)
+        self.assertFalse(page['detail']['plan']['redacted'])
+        text = page['detail']['plan']['diff']
+        for visible in ('app:old', 'app:new', '8080', 'TOKEN'):
+            self.assertIn(visible, text)
+        for secret in ('old-secret', 'new-secret', 'private-command'):
+            self.assertNotIn(secret, json.dumps(page))
+        self.assertNotIn('compose', page['detail']['plan'])
+        self.assertEqual(page, self.stack.browser.request('GET', '/api/request/' + request['id'])[1])
+        self.assertEqual(self.stack.browser.request('POST', '/api/decision', {
+            'action': 'approve', 'target': request['id'], 'binding': page['binding']})[0], 200)
+
     def test_env_only_change_does_not_echo_current_compose_to_the_agent(self):
         self.stack.pair()
         request = self.agent('request', kind='change', project='app', env_set={'A': '1'})
         self.assertNotIn('compose', request['detail']['plan'])
         self.assertNotIn('compose', self.fresh().request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
-        self.assertIn('compose', self.stack.browser.request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
+        self.assertNotIn('compose', self.stack.browser.request('GET', '/api/request/' + request['id'])[1]['detail']['plan'])
 
     def test_runner_refusal_is_returned_and_no_request_created(self):
         from shared.wire import Denied
@@ -216,6 +289,7 @@ class Gateway(unittest.TestCase):
 
     def test_serve_route_needs_published_port_and_writes_config(self):
         self.stack.pair()
+        self.stack.approve(self.agent('request', kind='read'))
         self.assertEqual(self.agent.error('request', kind='serve', project='app', https_port=8444, target_port=9999),
                          'port_not_published')
         self.assertEqual(self.agent.error('request', kind='serve', project='app', https_port=443, target_port=8096),

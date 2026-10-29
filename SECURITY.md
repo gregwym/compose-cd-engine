@@ -13,9 +13,9 @@
   deployer directory, or run privileged containers.
 - **agents** hold only an Ed25519 private key. Requests are signed, bound to the
   gateway's name, time-limited and single-use.
-- Each owner decision is its own WebAuthn assertion with user verification,
-  bound to a hash of the exact request row; a changed request cannot be approved
-  with an old ceremony.
+- Owner request decisions require a WebAuthn-authenticated session and the exact
+  displayed request binding. Account actions retain individual WebAuthn assertions.
+  Changed requests cannot be approved with an old preview or ceremony.
 
 ## Known limits
 
@@ -32,7 +32,8 @@
 - A change preview that Compose rejects returns no Compose output, since an agent could put any
   existing `.env` value into an invalid field. Errors from approved operations are returned with
   `.env` values of four or more characters replaced by `***`; this is best effort.
-- Logs are returned to paired agents unredacted; applications that log secrets expose them.
+- Logs require an explicit read or applicable project grant and use best-effort
+  redaction. Applications can emit secrets not recognizable by the scrubber.
 - Restoring an old `state/gateway` backup can bring back revoked grants.
 - Not independently audited.
 
@@ -41,3 +42,76 @@
 Report vulnerabilities privately through GitHub Security Advisories for this
 repository. Do not post credentials, host inventory or private configuration in
 public issues.
+
+## Reusable grants (2026-10-29; supersedes legacy authorization sections)
+
+Pairing authenticates an agent; it no longer implicitly grants environment reads.
+Request kind=read, project=*, permanent=true for reusable environment-wide Docker
+diagnosis, including the deployer itself. projects/logs/diagnose/read use allowlisted
+Docker metadata, never arbitrary host files. Environment values, commands, health
+output, arbitrary labels and driver options are omitted. Logs scrub known container
+environment values and common credential patterns; arbitrary application-generated
+secrets remain a best-effort limitation.
+
+Request kind=manage for one immutable project identity with boundary JSON:
+{"mounts":[{"path":"/volume1/media","mode":"ro"}],"networks":["shared-edge"]}.
+Mount roots and sources must exist, be canonical and visible to runner; sources
+must stay under an approved root without ro-to-rw escalation. new=true authorizes
+a not-yet-created project under PROJECTS_ROOT, then request create deploys it.
+Read/manage accept permanent=true, otherwise days=1..30 (default seven). Repeated
+change/create/down under manage return jobs without approval. Lifecycle rechecks
+boundaries too. Expansion requires a replacement manage request; out-of-bound
+changes fail closed. Deployer self-management remains prohibited, self read allowed.
+
+Project-owned default-named local volumes/bridge networks are supported; existing
+resources must bear the exact Compose project label, not just a matching prefix.
+Foreign/external volumes and custom names/drivers/options are rejected. External
+networks must be named in the approved boundary; only attachment is permitted.
+Reusable configs reject capabilities/devices, host/shared namespaces, privileged,
+build, sockets, hooks/providers, security overrides, secrets/configs and file-loading
+Compose features before rendering. A conservative lexical YAML gate rejects
+escapes/tags/aliases and file-loader keys: deliberately a narrower Compose subset,
+without a parser dependency. No down -v, prune or arbitrary Docker API is exposed.
+
+Request kind=elevated, seconds=900 (1..3600; no permanent mode) after manage.
+Elevation binds to the exact manage grant. exec takes project, full container ID,
+argv array and timeout (1..120 seconds). No implicit shell, privileged exec or Docker
+options are accepted; explicit shell argv is permitted within elevation, without a
+command whitelist. Gateway rechecks agent and grants when the job executes; runner
+rechecks project identity, live container mounts/privileges, boundary and expiry
+inside its lock. Output is capped at 64 KiB with exit/timeout/truncation evidence.
+Containers require GNU/BusyBox timeout. This mandatory in-container wrapper bounds
+ordinary commands; malicious images/commands can fork/daemonize, replace timeout or
+evade termination. This is NOT a hostile-code sandbox. Expiry/revocation prevents
+new execution, cannot undo commands already started. Exec inherits app credentials
+and network access. Replacing manage invalidates its elevation and linked triggers.
+
+Migration adds scope/boundary columns idempotently; existing grants become legacy,
+never manage/read. Existing one-shot requests retain semantics. Existing webhook
+triggers retain narrower signer-pinned image-only updates. New triggers on managed
+projects bind to the exact manage grant and recheck it before applying. Repository
+numeric ID, branch/workflow signer, digest/revision and image-repository checks stay.
+Authenticated matching webhook payload hashes are deduplicated for seven days.
+Webhooks only wake polling; current branch head is resolved independently, so stale
+delivery cannot select an old digest.
+
+Gateway.public_preview(item) is the HTTP review contract for anonymous and owner
+sessions: structural safe_diff from before/after rendered config, no raw compose,
+diff, env values or job outcomes. Legacy requests without safe_diff show a withheld
+placeholder and require resubmission for browser review. The allowlisted projection shows
+images, ports, mounts, networks and lifecycle/security flags. Environment values,
+commands, labels, healthcheck payloads and unknown fields are hidden. Known environment
+values from both versions and common credential patterns are scrubbed from visible
+fields. Resource names and paths are intentionally visible: do not put credentials
+in names or paths. This is not a guarantee against arbitrary secret encoding.
+
+The request link needs no login. Approval/denial requires an authenticated owner
+session (15 minutes), same-origin CSRF checks, and the exact row binding returned
+with the displayed preview. Snapshot and binding are read atomically; decisions
+compare and update atomically. A changed, expired or decided request fails closed.
+The first decision asks for Passkey login; an existing owner session is reused.
+Pairing, revocation and other account actions retain their Passkey ceremonies.
+
+Official references: Docker container exec CLI, Compose volumes/networks reference,
+GitHub validating webhook deliveries/best practices. Explicit resource names are
+not project-scoped, hence default-name AND ownership-label checks.

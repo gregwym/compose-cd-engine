@@ -106,15 +106,26 @@ def main(argv=None):
     logs.add_argument('--service')
     logs.add_argument('--tail', type=int, default=100)
     sub.add_parser('read').add_argument('project')
+    sub.add_parser('diagnose').add_argument('project')
+    ex = sub.add_parser('exec')
+    ex.add_argument('project')
+    ex.add_argument('container', help='full container ID from diagnose')
+    ex.add_argument('--timeout', type=int, default=30)
+    ex.add_argument('--wait', action='store_true')
+    ex.add_argument('argv', nargs=argparse.REMAINDER)
     for action in ('start', 'stop', 'restart', 'up', 'update'):
         item = sub.add_parser(action)
         item.add_argument('project')
         item.add_argument('services', nargs='*')
         item.add_argument('--wait', action='store_true')
     req = sub.add_parser('request', help='ask the owner to approve something')
-    req.add_argument('kind', choices=['operate', 'change', 'create', 'down', 'serve', 'unserve', 'trigger'])
+    req.add_argument('kind', choices=['read', 'manage', 'elevated', 'operate', 'change', 'create', 'down', 'serve', 'unserve', 'trigger'])
     req.add_argument('project', nargs='?', default='')
     req.add_argument('--days', type=int)
+    req.add_argument('--permanent', action='store_true')
+    req.add_argument('--seconds', type=int)
+    req.add_argument('--new', action='store_true')
+    req.add_argument('--boundary', type=Path, help='JSON with mounts [{path,mode}] and networks [name]')
     req.add_argument('--compose', type=Path, help='full new compose.yaml')
     req.add_argument('--env-set', action='append', metavar='KEY=VALUE')
     req.add_argument('--env-unset', action='append', metavar='KEY')
@@ -146,8 +157,12 @@ def main(argv=None):
             result = client.call(args.command)
         elif args.command == 'logs':
             result = client.call('logs', project=args.project, service=args.service, tail=args.tail)
-        elif args.command == 'read':
-            result = client.call('read', project=args.project)
+        elif args.command in ('read', 'diagnose'):
+            result = client.call(args.command, project=args.project)
+        elif args.command == 'exec':
+            result = client.call('exec', project=args.project, container=args.container, argv=args.argv, timeout=args.timeout)
+            if args.wait:
+                result = client.wait_job(result['job'])
         elif args.command in ('start', 'stop', 'restart', 'up', 'update'):
             result = client.call(args.command, project=args.project, services=args.services)
             if args.wait:
@@ -155,11 +170,15 @@ def main(argv=None):
         elif args.command == 'request':
             fields = {'kind': args.kind, 'project': args.project, 'days': args.days,
                       'compose': args.compose.read_text() if args.compose else None,
+                      'permanent': args.permanent, 'seconds': args.seconds, 'new': args.new,
+                      'boundary': json.loads(args.boundary.read_text()) if args.boundary else None,
                       'env_set': env_pairs(args.env_set) or None, 'env_unset': args.env_unset,
                       'https_port': args.https_port, 'target_port': args.target_port,
                       **{k: getattr(args, k) for k in ('service', 'repository', 'workflow', 'branch', 'image', 'platform')}}
             result = client.call('request', **fields)
-            if args.wait:
+            if args.wait and 'job' in result:
+                result = client.wait_job(result['job'])
+            elif args.wait:
                 print(json.dumps({'approval_url': result['approval_url'], 'id': result['id']}, ensure_ascii=False), flush=True)
                 result = client.wait_request(result['id'])
         elif args.command == 'status':
