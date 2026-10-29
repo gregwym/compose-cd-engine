@@ -46,3 +46,18 @@ with keyless Cosign.
 ## License
 
 [MIT](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md).
+
+## Reusable authorization
+
+    cdctl request read '*' --permanent --wait
+    cdctl request manage app --boundary boundary.json --permanent --wait
+    cdctl request change app --compose compose.yaml --wait
+    cdctl request elevated app --seconds 900 --wait
+    cdctl diagnose app
+    cdctl exec app FULL_CONTAINER_ID echo hello
+
+Boundary JSON has mounts [{path,mode}] with canonical NAS roots and ro/rw mode,
+plus external networks [name]. In-boundary edits/lifecycle/down reuse manage;
+expansion requires owner approval. Elevation is finite and requires an in-container
+timeout executable; it is not a hostile-code sandbox. Legacy grants are not upgraded.
+See the final reusable-grants section of docs/design.md for migration and limits.

@@ -44,6 +44,13 @@ class Store:
         self.path = str(path)
         setup = sqlite3.connect(self.path)
         setup.executescript(SCHEMA)
+        # Additive migration: old grants remain legacy, never acquire manage/read scope.
+        columns = {r[1] for r in setup.execute('PRAGMA table_info(grants)')}
+        for name, declaration in [('scope', "TEXT NOT NULL DEFAULT 'legacy'"),
+                                  ('boundary', "TEXT NOT NULL DEFAULT '{}'")]:
+            if name not in columns:
+                setup.execute(f'ALTER TABLE grants ADD COLUMN {name} {declaration}')
+        setup.commit()
         setup.close()
         with self.db() as db:
             # A restart loses the thread executing a job; its outcome must be checked, not retried.
@@ -151,7 +158,7 @@ class Store:
         if row is None:
             return None
         item = dict(row)
-        for key in ('detail', 'outcome', 'identity', 'result', 'config', 'last'):
+        for key in ('detail', 'outcome', 'identity', 'result', 'config', 'last', 'boundary'):
             if item.get(key):
                 item[key] = json.loads(item[key])
         if item.get('status') == 'pending' and item.get('expires') and item['expires'] <= now():
@@ -167,24 +174,32 @@ class Store:
             db.execute('UPDATE requests SET outcome=? WHERE id=?', (canonical(outcome), rid))
 
     # Grants ---------------------------------------------------------------
-    def add_grant(self, db, agent, project, identity, lifetime, request):
-        db.execute("UPDATE grants SET status='replaced' WHERE agent=? AND project=? AND status='active'", (agent, project))
+    def add_grant(self, db, agent, project, identity, lifetime, request, scope='legacy', boundary=None):
+        if scope not in ('legacy', 'read', 'manage', 'elevated'):
+            raise Denied('invalid_argument', 'scope')
+        if scope == 'elevated' and (type(lifetime) is not int or not 1 <= lifetime <= 3600):
+            raise Denied('invalid_argument', 'elevated lifetime')
+        expires = None if lifetime is None else now() + lifetime
+        db.execute("UPDATE grants SET status='replaced' WHERE agent=? AND project=? AND scope=? AND status='active'",
+                   (agent, project, scope))
         gid = uuid.uuid4().hex
-        db.execute('INSERT INTO grants VALUES (?,?,?,?,?,?,?,?)',
-                   (gid, agent, project, canonical(identity), now(), now() + lifetime, 'active', request))
-        self.event(db, 'owner', 'grant_issued', gid, {'agent': agent, 'project': project, 'expires': now() + lifetime})
+        db.execute('INSERT INTO grants(id,agent,project,identity,created,expires,status,request,scope,boundary) '
+                   'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                   (gid, agent, project, canonical(identity), now(), expires, 'active', request, scope,
+                    canonical(boundary or {})))
+        self.event(db, 'owner', 'grant_issued', gid, {'agent': agent, 'project': project, 'scope': scope, 'expires': expires})
         return gid
 
-    def grant(self, agent, project):
-        with self.db() as db:
-            row = db.execute("SELECT * FROM grants WHERE agent=? AND project=? AND status='active' AND expires>?",
-                             (agent, project, now())).fetchone()
-            return self.decode(row)
+    def grant(self, agent, project, scope=None):
+        candidates = [g for g in self.grants(agent) if g['project'] == project
+                      and (g['scope'] == scope if scope else g['scope'] in ('manage', 'legacy'))]
+        return next(iter(sorted(candidates, key=lambda g: g['scope'] != 'manage')), None)
 
     def grants(self, agent=None):
         with self.db() as db:
-            rows = db.execute("SELECT * FROM grants WHERE status='active' AND expires>?" + (' AND agent=?' if agent else '')
-                              + ' ORDER BY created DESC', (now(), agent) if agent else (now(),)).fetchall()
+            rows = db.execute("SELECT * FROM grants WHERE status='active' AND (expires IS NULL OR expires>?)" +
+                              (' AND agent=?' if agent else '') + ' ORDER BY created DESC',
+                              (now(), agent) if agent else (now(),)).fetchall()
             return [self.decode(r) for r in rows]
 
     # Jobs -----------------------------------------------------------------
@@ -213,7 +228,7 @@ class Store:
             return {
                 'requests': q("SELECT * FROM requests WHERE status='pending' AND expires>? ORDER BY created DESC", now()),
                 'agents': q("SELECT id, label, status, created FROM agents WHERE status IN ('active','pending') ORDER BY created DESC"),
-                'grants': q("SELECT * FROM grants WHERE status='active' AND expires>? ORDER BY created DESC", now()),
+                'grants': q("SELECT * FROM grants WHERE status='active' AND (expires IS NULL OR expires>?) ORDER BY created DESC", now()),
                 'triggers': q("SELECT id, project, service, config, status, last, created FROM triggers ORDER BY created DESC"),
                 'routes': q('SELECT * FROM routes ORDER BY https_port'),
                 'jobs': q('SELECT * FROM jobs ORDER BY created DESC LIMIT 30'),

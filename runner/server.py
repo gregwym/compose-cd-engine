@@ -10,9 +10,11 @@ import re
 import socket
 import tempfile
 import threading
+import time
 from pathlib import Path
-from runner import compose, files, policy
+from runner import compose, files, policy, boundary as bounds, diagnostics, execution
 from shared.registry import repository
+from shared import preview
 from shared.wire import Denied, canonical, digest, read_line
 
 SOCKET = os.environ.get('CD_RUNNER_SOCKET', '/run/compose-cd/runner.sock')
@@ -61,11 +63,15 @@ class Runner:
             raise Denied('not_manageable', 'changes need a single Compose file')
         observed = compose.observed_identity(name)
         if new:
+            if os.path.realpath(wd) != wd:
+                raise Denied('invalid_identity', 'canonical project paths required')
             if os.path.lexists(wd) or observed:
                 raise Denied('project_exists')
             if config != [wd.rstrip('/') + '/compose.yaml'] or Path(wd).parent.resolve() != self.root:
                 raise Denied('invalid_identity')
             return identity
+        if os.path.realpath(wd) != wd or any(os.path.realpath(f) != f for f in config):
+            raise Denied('invalid_identity', 'canonical project paths required')
         if not Path(wd).is_dir() or Path(wd).is_symlink():
             raise Denied('project_missing')
         for item in config:
@@ -74,6 +80,15 @@ class Runner:
         if observed and observed != identity:
             raise Denied('identity_changed', 'Container Manager project identity differs from the approved one')
         return identity
+
+    def authorize_boundary(self, identity, boundary, new=False):
+        self.identity(identity, new=new)
+        return bounds.canonical(boundary, self.deploy_root)
+
+    def check_boundary(self, identity, boundary):
+        for path in identity['config_files']:
+            bounds.preflight(files.read(path))
+        return bounds.check(compose.render(identity), identity, boundary, self.deploy_root)
 
     # Reads ----------------------------------------------------------------
     def projects(self):
@@ -98,7 +113,55 @@ class Runner:
         items = [c for c in compose.project_containers(project) if service in (None, c['service'])]
         if not items:
             raise Denied('not_found')
-        return {'logs': {c['name']: compose.logs(c['id'], tail) for c in items[:8]}}
+        raw = diagnostics.inspect_project(project)
+        values = [v.split('=', 1)[1] for c in raw for v in (c.get('Config') or {}).get('Env') or [] if '=' in v]
+        return {'logs': {c['name']: diagnostics.clean_text(compose.logs(c['id'], tail), values) for c in items[:8]}}
+
+    def diagnose(self, project):
+        return diagnostics.diagnose(project)
+
+    def exec(self, identity, boundary, container, argv, expires, timeout=30):
+        execution.validate(argv, timeout)
+        if not isinstance(container, str) or not re.fullmatch(r'[a-f0-9]{64}', container):
+            raise Denied('invalid_argument', 'full container id required')
+        with self.lock:
+            identity = self.identity(identity)
+            self.check_boundary(identity, boundary)
+            raw = diagnostics.inspect_project(identity['project'])
+            target = next((c for c in raw if c['Id'] == container), None)
+            if not target:
+                raise Denied('target_mismatch')
+            labels = (target.get('Config') or {}).get('Labels') or {}
+            if (labels.get(compose.LABEL + 'project') != identity['project'] or
+                    labels.get(compose.LABEL + 'project.working_dir') != identity['working_dir'] or
+                    labels.get(compose.LABEL + 'project.config_files', '').split(',') != identity['config_files']):
+                raise Denied('identity_changed')
+            host = target.get('HostConfig') or {}
+            if (host.get('Privileged') or host.get('CapAdd') or host.get('Devices') or host.get('SecurityOpt') or
+                    host.get('NetworkMode') == 'host' or str(host.get('NetworkMode', '')).startswith('container:') or
+                    host.get('PidMode') or host.get('UTSMode') or host.get('UsernsMode') or
+                    host.get('CgroupnsMode') == 'host' or host.get('DeviceRequests') or host.get('DeviceCgroupRules') or
+                    host.get('IpcMode') not in (None, '', 'private')):
+                raise Denied('policy', 'unsafe running container')
+            for mount in target.get('Mounts') or []:
+                if mount.get('Type') == 'bind':
+                    bounds.source(mount.get('Source'), not mount.get('RW'), boundary)
+                    if policy.forbidden_source(mount.get('Source'), self.deploy_root):
+                        raise Denied('policy', 'unsafe running bind')
+                elif mount.get('Type') == 'volume':
+                    volume = json.loads(compose.run([compose.DOCKER, 'volume', 'inspect', mount['Name']]))[0]
+                    if ((volume.get('Labels') or {}).get(compose.LABEL + 'project') != identity['project'] or
+                            volume.get('Driver') != 'local' or volume.get('Options')):
+                        raise Denied('boundary_exceeded', 'foreign running volume')
+                elif mount.get('Type') != 'tmpfs':
+                    raise Denied('policy', 'unsupported running mount')
+            if type(expires) is not int or expires <= time.time():
+                raise Denied('not_authorized', 'elevation expired')
+            timeout = min(timeout, max(1, int(expires - time.time())))
+            result = execution.run(container, argv, timeout)
+            values = [v.split('=', 1)[1] for v in (target.get('Config') or {}).get('Env') or [] if '=' in v]
+            result['output'] = diagnostics.clean_text(result['output'], values)
+            return result
 
     def read(self, identity):
         identity = self.identity(identity)
@@ -115,12 +178,14 @@ class Runner:
             raise Denied('invalid_argument', 'services')
         return services
 
-    def lifecycle(self, identity, action, services=None):
+    def lifecycle(self, identity, action, services=None, boundary=None):
         if action not in ACTIONS:
             raise Denied('invalid_argument', 'action')
         services = self.services(services)
         with self.lock:
             identity = self.identity(identity)
+            if boundary is not None:
+                self.check_boundary(identity, boundary)
             if action in ('start', 'stop', 'restart'):
                 compose.compose(identity, action, *services, timeout=600)
                 if action != 'stop':
@@ -159,9 +224,11 @@ class Runner:
                     'rollback_error': code, 'rollback_detail': detail}
         return {'status': 'rolled_back', 'error': exc.code, 'detail': exc.detail}
 
-    def down(self, identity):
+    def down(self, identity, boundary=None):
         with self.lock:
             identity = self.identity(identity)
+            if boundary is not None:
+                self.check_boundary(identity, boundary)
             compose.compose(identity, 'down', '--remove-orphans', timeout=600)
             return {'status': 'success'}
 
@@ -173,7 +240,7 @@ class Runner:
             env_path.write_bytes(env or b'')
             return compose.render(identity, [path], env_path)
 
-    def plan(self, identity, compose_text=None, env_set=None, env_unset=None, new=False, expect=None):
+    def plan(self, identity, compose_text=None, env_set=None, env_unset=None, new=False, expect=None, boundary=None):
         identity = self.identity(identity, change=True, new=new)
         path = Path(identity['config_files'][0])
         current = None if new else files.read(path)
@@ -186,6 +253,10 @@ class Runner:
         new_env = files.edit_env(env, env_set, env_unset) if (env_set or env_unset) else env
         if data == current and new_env == env:
             raise Denied('no_change')
+        if boundary is not None:
+            bounds.preflight(data)
+            if current is not None:
+                bounds.preflight(current)
         before = None
         if current is not None:
             try:
@@ -203,14 +274,16 @@ class Runner:
         found = policy.violations(after, self.deploy_root)
         if found:
             raise Denied('policy', found)
+        if boundary is not None:
+            boundary = bounds.check(after, identity, boundary, self.deploy_root)
         if expect:
             self.expect_image(before, after, expect)
         diff = ''.join(difflib.unified_diff((current or b'').decode('utf-8', 'replace').splitlines(True),
                                             data.decode('utf-8', 'replace').splitlines(True),
                                             path.name + ' (current)', path.name + ' (new)'))
-        return {'identity': identity, 'new': new, 'base': {'compose': sha(current), 'env': sha(env)},
+        return {'identity': identity, 'boundary': boundary, 'new': new, 'base': {'compose': sha(current), 'env': sha(env)},
                 'compose': data.decode('utf-8'), 'env_set': dict(env_set or {}), 'env_unset': list(env_unset or []),
-                'diff': diff, 'env': files.env_summary(env, new_env), 'expect': expect,
+                'diff': diff, 'safe_diff': preview.diff(before, after), 'env': files.env_summary(env, new_env), 'expect': expect,
                 'highlights': policy.new_highlights(before, after, identity['working_dir']),
                 'services': sorted((after.get('services') or {}))}
 
@@ -224,12 +297,12 @@ class Runner:
         if canonical(wanted) != canonical(after):
             raise Denied('unexpected_change', 'the edit changed more than one image')
 
-    def apply(self, plan):
+    def apply(self, plan, boundary=None):
         if not isinstance(plan, dict) or not isinstance(plan.get('compose'), str):
             raise Denied('invalid_plan')
         with self.lock:
             fresh = self.plan(plan['identity'], plan['compose'], plan.get('env_set'), plan.get('env_unset'),
-                              bool(plan.get('new')), plan.get('expect'))
+                              bool(plan.get('new')), plan.get('expect'), boundary=boundary)
             if fresh['base'] != plan['base']:
                 raise Denied('stale', 'project files changed since approval')
             return self.write_and_up(fresh)
@@ -278,11 +351,13 @@ class Runner:
             return {'status': 'failed', 'error': exc.code, 'detail': exc.detail}
         return {'status': 'success', 'backups': backups}
 
-    def update_image(self, identity, service, image):
+    def update_image(self, identity, service, image, boundary=None):
         if not isinstance(image, str) or not PINNED.fullmatch(image) or not isinstance(service, str):
             raise Denied('invalid_argument', 'image')
         with self.lock:
             identity = self.identity(identity, change=True)
+            if boundary is not None:
+                self.check_boundary(identity, boundary)
             raw = compose.render(identity, interpolate=False).get('services', {}).get(service, {}).get('image')
             current = compose.render(identity).get('services', {}).get(service, {}).get('image')
             if not raw or not current:
@@ -292,7 +367,7 @@ class Runner:
             if repository(current) != repository(image):
                 raise Denied('repository_mismatch', repository(current))
             data, env_set = files.image_edit(files.read(identity['config_files'][0]), raw, image)
-            plan = self.plan(identity, data.decode(), env_set, None, expect={'service': service, 'image': image})
+            plan = self.plan(identity, data.decode(), env_set, None, expect={'service': service, 'image': image}, boundary=boundary)
             return self.write_and_up(plan)
 
 
@@ -300,7 +375,8 @@ def handle(runner, request):
     op, args = request.get('op'), request.get('args') or {}
     table = {'projects': runner.projects, 'logs': runner.logs, 'read': runner.read,
              'lifecycle': runner.lifecycle, 'plan': runner.plan, 'apply': runner.apply,
-             'down': runner.down, 'update_image': runner.update_image}
+             'down': runner.down, 'update_image': runner.update_image,
+             'authorize_boundary': runner.authorize_boundary, 'diagnose': runner.diagnose, 'exec': runner.exec}
     if op not in table or not isinstance(args, dict):
         raise Denied('unknown_operation')
     try:

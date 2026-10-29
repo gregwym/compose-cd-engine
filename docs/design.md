@@ -145,3 +145,66 @@ webhook 密钥由 gateway 生成，只在 Passkey 登录后的主页显示。`CD
 ## 10. 未在实机验证的点
 
 DSM Container Manager 对命令行创建项目的识别、CM 自带 Compose 版本、Synology ACL 下原地写入、`host.docker.internal` 在 tailscale userspace 模式下的可达性、Funnel 节点属性、iPhone Passkey。验收清单见 `docs/synology.zh-CN.md`。
+
+## Reusable grants (2026-10-29; supersedes legacy authorization sections)
+
+Pairing authenticates an agent; it no longer implicitly grants environment reads.
+Request kind=read, project=*, permanent=true for reusable environment-wide Docker
+diagnosis, including the deployer itself. projects/logs/diagnose/read use allowlisted
+Docker metadata, never arbitrary host files. Environment values, commands, health
+output, arbitrary labels and driver options are omitted. Logs scrub known container
+environment values and common credential patterns; arbitrary application-generated
+secrets remain a best-effort limitation.
+
+Request kind=manage for one immutable project identity with boundary JSON:
+{"mounts":[{"path":"/volume1/media","mode":"ro"}],"networks":["shared-edge"]}.
+Mount roots and sources must exist, be canonical and visible to runner; sources
+must stay under an approved root without ro-to-rw escalation. new=true authorizes
+a not-yet-created project under PROJECTS_ROOT, then request create deploys it.
+Read/manage accept permanent=true, otherwise days=1..30 (default seven). Repeated
+change/create/down under manage return jobs without approval. Lifecycle rechecks
+boundaries too. Expansion requires a replacement manage request; out-of-bound
+changes fail closed. Deployer self-management remains prohibited, self read allowed.
+
+Project-owned default-named local volumes/bridge networks are supported; existing
+resources must bear the exact Compose project label, not just a matching prefix.
+Foreign/external volumes and custom names/drivers/options are rejected. External
+networks must be named in the approved boundary; only attachment is permitted.
+Reusable configs reject capabilities/devices, host/shared namespaces, privileged,
+build, sockets, hooks/providers, security overrides, secrets/configs and file-loading
+Compose features before rendering. A conservative lexical YAML gate rejects
+escapes/tags/aliases and file-loader keys: deliberately a narrower Compose subset,
+without a parser dependency. No down -v, prune or arbitrary Docker API is exposed.
+
+Request kind=elevated, seconds=900 (1..3600; no permanent mode) after manage.
+Elevation binds to the exact manage grant. exec takes project, full container ID,
+argv array and timeout (1..120 seconds). No implicit shell, privileged exec or Docker
+options are accepted; explicit shell argv is permitted within elevation, without a
+command whitelist. Gateway rechecks agent and grants when the job executes; runner
+rechecks project identity, live container mounts/privileges, boundary and expiry
+inside its lock. Output is capped at 64 KiB with exit/timeout/truncation evidence.
+Containers require GNU/BusyBox timeout. This mandatory in-container wrapper bounds
+ordinary commands; malicious images/commands can fork/daemonize, replace timeout or
+evade termination. This is NOT a hostile-code sandbox. Expiry/revocation prevents
+new execution, cannot undo commands already started. Exec inherits app credentials
+and network access. Replacing manage invalidates its elevation and linked triggers.
+
+Migration adds scope/boundary columns idempotently; existing grants become legacy,
+never manage/read. Existing one-shot requests retain semantics. Existing webhook
+triggers retain narrower signer-pinned image-only updates. New triggers on managed
+projects bind to the exact manage grant and recheck it before applying. Repository
+numeric ID, branch/workflow signer, digest/revision and image-repository checks stay.
+Authenticated matching webhook payload hashes are deduplicated for seven days.
+Webhooks only wake polling; current branch head is resolved independently, so stale
+delivery cannot select an old digest.
+
+Gateway.public_preview(item) is the HTTP review contract for anonymous and owner
+sessions: structural safe_diff from before/after rendered config, no raw compose,
+diff, env values or job outcomes. Legacy requests without safe_diff show a withheld
+placeholder. Scalar values are all hidden rather than guessing which are secrets.
+
+Official references: Docker container exec CLI, Compose volumes/networks reference,
+GitHub validating webhook deliveries/best practices. Explicit resource names are
+not project-scoped, hence default-name AND ownership-label checks.
+
+Primary references: https://docs.docker.com/reference/cli/docker/container/exec/ ; https://docs.docker.com/reference/compose-file/volumes/ ; https://docs.docker.com/reference/compose-file/networks/ ; https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks

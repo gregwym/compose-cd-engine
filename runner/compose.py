@@ -96,6 +96,10 @@ def observed_identity(name, items=None):
 
 def base(identity, files=None, env_file=None):
     argv = [DOCKER, 'compose', '-p', identity['project'], '--project-directory', identity['working_dir']]
+    # Pin dotenv explicitly: .env COMPOSE_FILE must never cause Compose to read a second directory.
+    if env_file is None:
+        candidate = Path(identity['working_dir']) / '.env'
+        env_file = candidate if candidate.is_file() else '/dev/null'
     for path in files or identity['config_files']:
         argv += ['-f', str(path)]
     if env_file is not None:
