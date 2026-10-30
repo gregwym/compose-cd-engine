@@ -48,8 +48,6 @@ Always `read` first and edit the current text; never write a compose.yaml from m
 Under manage, `request change|create|down` and all lifecycle actions run immediately as jobs.
 `boundary_exceeded` lists what is missing (a host path, another project's network/volume, a
 host feature): ask the owner with `request manage --compose`. `policy` is never approvable.
-`unverifiable_path`: a host directory outside PROJECTS_ROOT is mounted inside another directory the
-project may write; mount that writable directory itself and use the subdirectory in the container.
 
 ## Rules
 

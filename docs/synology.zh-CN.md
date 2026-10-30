@@ -18,8 +18,8 @@
      PROJECTS_ROOT=/volume1/docker
      ```
      runner 只挂载 `PROJECTS_ROOT`（其中的 `DEPLOY_ROOT` 被空 tmpfs 覆盖）。项目的媒体目录（如
-     `/volume1/download/bangumi`）由 Docker 按项目的 Compose 文件挂载，runner 不挂载也不读取。这些目录
-     只做路径检查，审批页会标为"未检查符号链接"。
+     `/volume1/download/bangumi`）由 Docker 按项目的 Compose 文件挂载，runner 不挂载、不读取也不验证；
+     授权按 Compose 中写的路径生效（不检查符号链接）。
 2. Container Manager → 项目 → 新增 → 路径选 `DEPLOY_ROOT` → 使用现有 compose.yaml → 启动。
 
 会先运行一次 `prepare`（初始化 deployer 自己的状态和 socket 目录，完成后显示"已退出"，属正常），再启动三个容器：`tailscale`、`gateway`、`runner`。不需要 SSH 建目录或改属主。

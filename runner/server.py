@@ -32,8 +32,8 @@ class Runner:
         self.root = Path(projects_root).resolve(strict=True)
         self.deploy_root = str(Path(deploy_root).resolve()) if deploy_root else ''
         self.health_timeout = health_timeout
-        # The only host directory the runner sees; data directories elsewhere are mounted by the
-        # Docker daemon and checked lexically (runner/boundary.py).
+        # The only host directory the runner sees; data directories are mounted by the Docker
+        # daemon and authorized as written (runner/boundary.py).
         self.views = (str(self.root),)
         self.lock = threading.Lock()
 
@@ -93,7 +93,7 @@ class Runner:
         files and an optional proposed compose.yaml need, so approved projects stay manageable."""
         identity = self.identity(identity, new=new)
         ctx = self.scope(identity)
-        result = bounds.canonical(boundary, self.deploy_root, self.views)
+        result = bounds.canonical(boundary, self.deploy_root)
         derived = []
         if derive and not new:
             derived.append(bounds.derive(self.structure(identity), ctx))
@@ -103,12 +103,7 @@ class Runner:
             env = None if new else files.read(Path(identity['working_dir']) / '.env')
             bounds.preflight(compose_text)
             derived.append(bounds.derive(self.render(identity, compose_text.encode(), env, env_resolution=False), ctx))
-        result = bounds.merge(result, *derived) if derived else result
-        problems = sorted({p for need in derived for p in bounds.exposed(need, ctx, result)})
-        if problems:
-            raise Denied('unverifiable_path', problems)
-        # Shown to the owner, not stored: the grant itself keeps the boundary format.
-        return {**result, 'unverified': bounds.unverified(result, ctx)}
+        return bounds.merge(result, *derived) if derived else result
 
     def structure(self, identity):
         """The rendered configuration as policy sees it: env_file paths kept, not read."""

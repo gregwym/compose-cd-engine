@@ -162,34 +162,26 @@ class Boundaries(unittest.TestCase):
         with self.assertRaises(Denied) as exc:
             self.check({'volumes': [{**mount, 'source': str(self.root / 'link')}]})
         self.assertEqual(exc.exception.code, 'policy')
-        # A visible symlink that leads outside the runner's view is checked as its (unverified) target.
+        # Authorized as written: a symlink is not followed (only hard limits look at its target).
         (self.root / 'out').symlink_to('/srv/media')
         with self.assertRaises(Denied) as exc:
             self.check({'volumes': [{**mount, 'source': str(self.root / 'out/x'), 'read_only': False}]})
-        self.assertEqual(exc.exception.detail, ['mount /srv/media/x (rw)'])
+        self.assertEqual(exc.exception.detail, [f'mount {self.root}/out/x (rw)'])
 
-    def test_paths_outside_the_runner_view_are_lexical_and_unverified(self):
+    def test_data_paths_are_authorized_as_written(self):
         self.boundary = {'mounts': [{'path': '/srv/media/a', 'mode': 'rw'}, {'path': '/srv/ro', 'mode': 'ro'}]}
         bind = lambda source, ro=False: {'type': 'bind', 'source': source, 'target': '/m', 'read_only': ro}
-        # Never read: none of these exist, the runner only compares paths.
-        self.check({'volumes': [bind('/srv/media/a'), bind('/srv/ro/sub', True), bind('/srv/./ro/', True)]})
-        ctx = boundary.Scope('app', self.identity['working_dir'], '', (str(self.root),))
-        self.assertEqual(boundary.unverified(boundary.canonical(self.boundary, ''), ctx), ['/srv/media/a', '/srv/ro'])
-        # Inside a directory the project can write, a symlink it planted would redirect the mount.
-        for volumes in ([bind('/srv/media/a/sub')], [bind('/srv/media/a/sub', True)]):
-            with self.subTest(volumes=volumes), self.assertRaises(Denied) as exc:
-                self.check({'volumes': volumes})
-            self.assertEqual(exc.exception.code, 'unverifiable_path')
-        self.boundary = {'mounts': [{'path': '/srv', 'mode': 'rw'}]}
+        # None of these exist; the runner only compares paths.
+        self.check({'volumes': [bind('/srv/media/a'), bind('/srv/media/a/sub'), bind('/srv/ro/sub', True),
+                                bind('/srv/./ro/', True)]})
         with self.assertRaises(Denied) as exc:
-            self.check({'volumes': [bind('/srv/media')]})
-        self.assertEqual(exc.exception.code, 'unverifiable_path')
-        # Lexical checks still forbid the host and the deployer.
+            self.check({'volumes': [bind('/srv/ro/sub')]})
+        self.assertEqual(exc.exception.code, 'boundary_exceeded')
         for source in ('/etc/x', '/volume1', '/volume1/@appstore/x', '/volume1/../etc', '/var/run/docker.sock'):
             with self.subTest(source=source), self.assertRaises(Denied) as exc:
                 self.check({'volumes': [bind(source)]})
             self.assertEqual(exc.exception.code, 'policy')
-        # Compose reads env_file inside the runner, so it must be visible.
+        # Compose reads env_file inside the runner, so it must be there.
         with self.assertRaises(Denied) as exc:
             self.check({'env_file': ['/srv/ro/app.env']})
         self.assertEqual(exc.exception.code, 'not_visible')

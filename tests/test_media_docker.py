@@ -185,19 +185,13 @@ class MediaStack(unittest.TestCase):
         self.assertFalse(listed['cd-deployer']['manageable'])
 
         # One manage request: the boundary is derived from the project's own files.
-        # A writable parent would let the project plant symlinks the runner cannot see: refused.
-        status, data = self.agent.send(self.agent.body('request', {
-            'kind': 'manage', 'project': PROJECT, 'permanent': True,
-            'boundary': {'mounts': [{'path': str(self.v1 / 'download'), 'mode': 'rw'}]}}))
-        self.assertEqual((status, data['error']), (403, 'unverifiable_path'), data)
         request = self.agent('request', kind='manage', project=PROJECT, permanent=True)
         derived = request['detail']['boundary']
         media = [str(self.v1 / 'download/bangumi'), str(self.v1 / 'video/bangumi')]
         self.assertEqual(derived['mounts'], [{'path': path, 'mode': 'rw'} for path in media])
         self.assertEqual((derived['networks'], derived['volumes'], derived['host']), ([], [], []))
-        self.assertEqual(request['detail']['unverified'], media)  # invisible to the runner, said so
         status, page = self.stack.browser.request('GET', '/api/request/' + request['id'])
-        self.assertEqual((page['detail']['boundary'], page['detail']['unverified']), (derived, media))
+        self.assertEqual(page['detail']['boundary'], derived)  # what the owner approves
         grant = self.stack.approve(request)['outcome']['grant']
         approvals = self.requests()
 
@@ -228,8 +222,6 @@ class MediaStack(unittest.TestCase):
         error = self.denied('change', wider)
         self.assertEqual(error['error'], 'boundary_exceeded')
         self.assertEqual(error['detail'], [f'mount {self.v1}/download/other (rw)'])
-        nested = self.compose_text.replace('      - cache:/cache', f'      - cache:/cache\n      - {self.v1}/download/bangumi/sub:/sub')
-        self.assertEqual(self.denied('change', nested)['error'], 'unverifiable_path')
 
         # Host takeover and the deployer stay out of reach whatever is approved.
         deployer_id = compose.project_containers('cd-deployer')[0]['id']
