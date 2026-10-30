@@ -37,13 +37,25 @@ Always `read` first and edit the current text; never write a compose.yaml from m
     python3 cdctl.py request trigger <project> --service web --repository owner/repo \
         --workflow .github/workflows/docker.yml --branch main --image ghcr.io/owner/repo --wait
 
+## Manage (one approval per project, reusable)
+
+    python3 cdctl.py request read --permanent --wait
+    python3 cdctl.py request manage <project> --permanent --wait     # boundary derived from its files
+    python3 cdctl.py request manage <project> --permanent --compose new.yaml --wait   # widen for new.yaml
+    python3 cdctl.py request elevated <project> --seconds 900 --wait
+    python3 cdctl.py exec --wait <project> <full-container-id> cmd args...   # ids from diagnose
+
+Under manage, `request change|create|down` and all lifecycle actions run immediately as jobs.
+`boundary_exceeded` lists what is missing (a host path, another project's network/volume, a
+host feature): ask the owner with `request manage --compose`. `policy` is never approvable.
+
 ## Rules
 
 - Tell the owner what you are asking for and why, then give them the `approval_url`.
 - Job results: `success`, `rolled_back` (change failed health checks, files restored),
   `failed`, `stale` (someone changed the project in Container Manager; `read` again and
   re-propose), `unknown` (the gateway restarted; check `projects`, do not retry blindly).
-- `policy` errors (privileged, docker.sock, system paths, `build:`) cannot be approved;
+- `policy` errors (privileged, docker.sock, system paths, host PID, `build:`, the deployer) cannot be approved;
   explain them to the owner instead of trying variations.
 - `.env` values are never shown to you; pass secrets only via `--env-set` when the owner gives them.
 - Do not use `down` to "restart" something; use `restart` or `up`.

@@ -5,7 +5,10 @@ import re
 
 SYSTEM = ('/etc', '/proc', '/sys', '/dev', '/boot', '/root', '/usr', '/bin', '/sbin', '/lib', '/lib64',
           '/run', '/var/run', '/var/lib/docker', '/var/packages')
-FORBIDDEN_CAPS = {'ALL', 'SYS_ADMIN', 'SYS_MODULE', 'CAP_SYS_ADMIN', 'CAP_SYS_MODULE', 'CAP_ALL'}
+# Capabilities that amount to the host itself: mounts, kernel modules, raw I/O, reading any host file
+# by handle, LSM policy. Other capabilities are host-level but approvable per project.
+FORBIDDEN_CAPS = {'ALL', 'SYS_ADMIN', 'SYS_MODULE', 'SYS_RAWIO', 'SYS_BOOT', 'DAC_READ_SEARCH', 'MAC_ADMIN',
+                  'MAC_OVERRIDE', 'BPF'}
 
 
 def under(path, root):
@@ -60,7 +63,8 @@ def volume_devices(config):
 def host_files(config):
     """Host files mounted through top-level secrets and configs.
 
-    env_file is not here: Compose merges and drops it while loading, so no rendered config shows it."""
+    env_file is not here: a normal render merges and drops it; violations() checks it in renders
+    made with --no-env-resolution, which keep it."""
     for kind in ('secrets', 'configs'):
         for name, item in sorted((config.get(kind) or {}).items()):
             path = (item or {}).get('file')
@@ -81,7 +85,7 @@ def violations(config, deploy_root):
     for name, service in sorted((config.get('services') or {}).items()):
         if service.get('privileged'):
             found.append(f'{name}: privileged')
-        if set(map(str.upper, service.get('cap_add') or [])) & FORBIDDEN_CAPS:
+        if {str(c).upper().removeprefix('CAP_') for c in service.get('cap_add') or []} & FORBIDDEN_CAPS:
             found.append(f'{name}: forbidden capability')
         for key in ('pid', 'userns_mode', 'cgroup', 'ipc', 'uts'):
             if service.get(key) == 'host':
@@ -96,6 +100,11 @@ def violations(config, deploy_root):
             reason = forbidden_source(item['source'], deploy_root)
             if reason:
                 found.append(f'{name}: {reason}')
+        for item in service.get('env_file') or []:  # present only in --no-env-resolution renders
+            path = item.get('path') if isinstance(item, dict) else item
+            reason = forbidden_source(path, deploy_root) if isinstance(path, str) else None
+            if reason:
+                found.append(f'{name}: env_file {reason}')
         for item in service.get('volumes') or []:
             if isinstance(item, dict) and item.get('type') == 'npipe':
                 found.append(f'{name}: npipe mount')

@@ -107,10 +107,12 @@ def base(identity, files=None, env_file=None):
     return argv
 
 
-def render(identity, files=None, env_file=None, interpolate=True):
+def render(identity, files=None, env_file=None, interpolate=True, env_resolution=True):
     argv = base(identity, files, env_file) + ['config', '--format', 'json']
     if not interpolate:
         argv.append('--no-interpolate')
+    if not env_resolution:
+        argv.append('--no-env-resolution')  # keeps env_file paths in the output, unread
     return json.loads(run(argv, timeout=60, secrets=secrets_of(identity, env_file)))
 
 

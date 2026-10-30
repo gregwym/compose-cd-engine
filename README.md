@@ -14,17 +14,20 @@ iPhone ─ Passkey ────────┤
                                                      network: none
 ```
 
-| Tier | What the agent can do | How it gets it |
+| Grant | What the agent can do | Lifetime |
 |---|---|---|
-| Read | list projects, status, images, ports, bounded logs | pairing |
-| Operate | read compose.yaml, start / stop / restart / up / pull-and-update | one Passkey per project, up to 30 days |
-| Change | edit compose.yaml / .env, create, down, tailnet route, webhook trigger | one Passkey per change, shown as a diff |
+| read `*` | list projects, status, logs, structural diagnosis of everything | permanent or days |
+| manage `<project>` | read files, every lifecycle action, edit compose.yaml / .env, create, down, triggers — inside the project's boundary | permanent or days |
+| elevated `<project>` | `exec` argv in the project's containers | 1–3600 seconds |
+
+Legacy one-shot `operate` / `change` / `serve` approvals still work as before.
 
 - Changes are written **in place** in the Container Manager project directory, with
   a backup next to the file, then `up -d` and a health check; failure restores the
   files automatically.
-- The runner independently rejects privileged containers, Docker socket mounts,
-  system paths, `build:` and the deployer's own directory, whatever the gateway asks.
+- The runner independently rejects host takeover (privileged, Docker socket, system
+  paths, host PID/IPC, kernel-level capabilities, `build:`) and anything touching the
+  deployer itself, whatever the gateway asks.
 - GitHub webhooks (or 30-minute polling) update one service to the Cosign-verified
   image built for the branch head.
 
@@ -56,8 +59,12 @@ with keyless Cosign.
     cdctl diagnose app
     cdctl exec app FULL_CONTAINER_ID echo hello
 
-Boundary JSON has mounts [{path,mode}] with canonical NAS roots and ro/rw mode,
-plus external networks [name]. In-boundary edits/lifecycle/down reuse manage;
-expansion requires owner approval. Elevation is finite and requires an in-container
-timeout executable; it is not a hostile-code sandbox. Legacy grants are not upgraded.
-See the final reusable-grants section of docs/design.md for migration and limits.
+A manage request derives the project's boundary from its current files (and from
+`--compose` when given): host paths outside the project directory with ro/rw, other
+projects' networks/volumes, and host-level features such as `network_mode:host`,
+`cap:NET_ADMIN` or `device:/dev/net/tun`. `--boundary` may add broader roots. Everything
+else (tmpfs, no-new-privileges, `network_mode: service:…`, own volumes and networks,
+env_file inside the boundary…) is the project's own business and never asks again.
+Leaving the boundary fails with `boundary_exceeded` and the missing items; a new manage
+request with `--compose` covers them. Elevation is finite and requires an in-container
+timeout executable; it is not a hostile-code sandbox. See "Project boundaries" in docs/design.md.

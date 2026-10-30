@@ -260,3 +260,34 @@ still rejected, even with ownership labels. Explicitly boundary-approved externa
 network attachments retain their existing semantics. Shared namespaces, privileged
 mode, devices and other hard-policy restrictions are unchanged; this compatibility
 fix does not by itself make an unsafe ingress configuration eligible for exec.
+
+### Project boundaries (2026-10-30; supersedes the boundary and resource rules above)
+
+A manage grant authorizes one project and its resource boundary, not a list of Compose
+features. Every rendered setting is in exactly one class (runner/boundary.py):
+
+| Class | Examples | Outcome |
+|---|---|---|
+| Forbidden | privileged; SYS_ADMIN, SYS_MODULE, SYS_RAWIO, SYS_BOOT, DAC_READ_SEARCH, MAC_*, BPF, ALL; host pid/ipc/uts/userns/cgroup; unconfined; Docker socket, system paths, volume roots, `@` directories; `use_api_socket`; `build`; Compose `provider`; privileged hooks; the deployer's directory, containers, networks and volumes | `policy`, never approvable |
+| Boundary | host paths outside the project directory (bind, `driver_opts` bind device, `env_file`, secret/config `file`) with ro/rw; networks and volumes owned by another project or unlabeled; host-level features: `network_mode:host`, `cap:<X>`, `device:<path>`, `device_cgroup_rule`, `gpu`, `security_opt:<X>`, non-local volume drivers or network filesystems, non-bridge network drivers or bridge options, `cgroup_parent`, non-runc `runtime`, shared mount propagation | listed in the manage grant; `boundary_exceeded` with the missing items otherwise |
+| Project | everything else: own volumes and networks (custom names included; Compose labels them), tmpfs volumes, `no-new-privileges`, `network_mode`/`pid`/`ipc: service:<x>`, own `container:` references, `volumes_from`, sysctls, hooks, ports, env, healthchecks, anchors/merge keys | never checked |
+
+Boundary JSON: `{"mounts":[{path,mode}],"networks":[],"volumes":[],"host":[]}`; grants
+stored before `volumes`/`host` existed stay valid. `request manage` merges the requested
+boundary with what the project's current files need (and a proposed `compose` when given),
+so the owner approves the whole project once; widening is a new manage request. Approval
+stores exactly the boundary that was shown.
+
+Checks happen where they matter: `up`, `update`, change, create and trigger updates check
+the rendered files (a `--no-env-resolution` render, so `env_file` paths are checked before
+Compose reads them). `start`/`stop`/`restart`/`down` reuse or remove the project's own
+containers and check only identity. `exec` checks identity, that the container is the
+project's, and that it has no forbidden host access. Docker's default `CgroupnsMode=host`
+on cgroup v1 hosts (DSM 7) is not treated as host access.
+
+Host paths must be visible to the runner so symlinks are resolved before the check: the
+runner sees PROJECTS_ROOT and, read-only, `CD_HOST_VIEW` (default `/volume1` in
+synology/compose.yaml). Paths outside both fail with `not_visible`. Paths inside the project
+directory need no boundary, even before Docker creates them. Remaining lexical preflight:
+`include`, `extends` and `label_file` (they load files the rendered output cannot show),
+backslash escapes and YAML tags.
