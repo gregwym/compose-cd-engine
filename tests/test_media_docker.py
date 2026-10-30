@@ -5,21 +5,23 @@ network_mode: service:..., media directories outside /volume1/docker. It starts 
 Container Manager project (docker compose up by the owner), then one permanent manage grant must
 cover everything ordinary management needs, without code changes or further approval.
 
-Opt in with CD_DOCKER_TESTS=1 CD_MEDIA_TESTS=1 (pulls the two images unless present).
-CD_MEDIA_PREFIX sets where /volume1 lives (default: a temporary directory).
+The runner runs as in synology/compose.yaml: in its own mount namespace it sees PROJECTS_ROOT
+(DEPLOY_ROOT under an empty tmpfs) and nothing else of /volume1, so the media directories exist
+only for the Docker daemon.
+
+Opt in with CD_DOCKER_TESTS=1 CD_MEDIA_TESTS=1 (pulls the two images unless present; needs root
+for unshare). CD_MEDIA_PREFIX sets where /volume1 lives (default: a temporary directory).
 """
 import json
 import os
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
 from helpers import Stack
-from runner import compose, server
-from runner.server import Runner
+from runner import compose
 
 QB_IMAGE = os.environ.get('CD_QB_IMAGE', 'linuxserver/qbittorrent:latest')
 AB_IMAGE = os.environ.get('CD_AB_IMAGE', 'estrellaxd/auto_bangumi:latest')
@@ -77,6 +79,15 @@ volumes:
     driver_opts: {type: tmpfs, device: tmpfs, o: "size=64m"}
 '''
 
+# The runner container's view: an empty /volume1 with PROJECTS_ROOT bound back, DEPLOY_ROOT hidden.
+RUNNER = '''set -e
+mkdir -p "$KEEP" && mount --bind "$PROJECTS_ROOT" "$KEEP"
+mount -t tmpfs tmpfs "$V1" && mkdir -p "$PROJECTS_ROOT" && mount --bind "$KEEP" "$PROJECTS_ROOT"
+mount -t tmpfs tmpfs "$DEPLOY_ROOT"
+for d in "$V1/download" "$V1/video" "$DEPLOY_ROOT/compose.yaml"; do test ! -e "$d"; done
+exec python3 -m runner.server
+'''
+
 DEPLOYER = '''services:
   gateway:
     image: busybox:1.36
@@ -109,11 +120,17 @@ class MediaStack(unittest.TestCase):
         # The owner's existing Container Manager project.
         self.cli('-p', PROJECT, '--project-directory', str(self.wd), 'up', '-d', '--wait', timeout=600)
 
+        (self.v1 / 'download/bangumi/keep.mkv').write_bytes(b'media')
+        self.volume = self.volume_state()
+
         self.sockets = tempfile.mkdtemp(prefix='cd-', dir='/tmp')
         path = self.sockets + '/runner.sock'
-        self.runner = Runner(self.docker, str(self.deploy_root), health_timeout=240, host_view=[str(self.v1)])
-        threading.Thread(target=server.serve, args=(self.runner, path), daemon=True).start()
+        env = dict(os.environ, V1=str(self.v1), PROJECTS_ROOT=str(self.docker), DEPLOY_ROOT=str(self.deploy_root),
+                   KEEP=self.sockets + '/keep', CD_RUNNER_SOCKET=path, CD_HEALTH_TIMEOUT='240',
+                   CD_DOCKER=compose.DOCKER, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+        self.process = subprocess.Popen(['unshare', '-m', '--propagation', 'private', 'sh', '-c', RUNNER], env=env)
         while not os.path.exists(path):
+            self.assertIsNone(self.process.poll(), 'runner namespace setup failed')
             time.sleep(0.05)
         self.stack = Stack(runner_socket=path, fake=False)
         self.stack.enroll()
@@ -123,8 +140,15 @@ class MediaStack(unittest.TestCase):
     def cli(self, *args, timeout=300):
         subprocess.run([compose.DOCKER, 'compose', *args], check=True, capture_output=True, timeout=timeout)
 
+    def volume_state(self):
+        out = subprocess.run([compose.DOCKER, 'volume', 'inspect', PROJECT + '_cache'], check=True,
+                             capture_output=True).stdout
+        return [(v['Name'], v['CreatedAt'], v['Options']) for v in json.loads(out)]
+
     def tearDown(self):
         self.stack.close()
+        self.process.kill()
+        self.process.wait()
         for name, wd in ((PROJECT, self.wd), ('cd-deployer', self.deploy_root)):
             subprocess.run([compose.DOCKER, 'compose', '-p', name, '--project-directory', str(wd), 'down',
                             '--remove-orphans', '-v'], capture_output=True)
@@ -161,13 +185,19 @@ class MediaStack(unittest.TestCase):
         self.assertFalse(listed['cd-deployer']['manageable'])
 
         # One manage request: the boundary is derived from the project's own files.
+        # A writable parent would let the project plant symlinks the runner cannot see: refused.
+        status, data = self.agent.send(self.agent.body('request', {
+            'kind': 'manage', 'project': PROJECT, 'permanent': True,
+            'boundary': {'mounts': [{'path': str(self.v1 / 'download'), 'mode': 'rw'}]}}))
+        self.assertEqual((status, data['error']), (403, 'unverifiable_path'), data)
         request = self.agent('request', kind='manage', project=PROJECT, permanent=True)
         derived = request['detail']['boundary']
-        self.assertEqual(derived['mounts'], [{'path': str(self.v1 / 'download/bangumi'), 'mode': 'rw'},
-                                             {'path': str(self.v1 / 'video/bangumi'), 'mode': 'rw'}])
+        media = [str(self.v1 / 'download/bangumi'), str(self.v1 / 'video/bangumi')]
+        self.assertEqual(derived['mounts'], [{'path': path, 'mode': 'rw'} for path in media])
         self.assertEqual((derived['networks'], derived['volumes'], derived['host']), ([], [], []))
+        self.assertEqual(request['detail']['unverified'], media)  # invisible to the runner, said so
         status, page = self.stack.browser.request('GET', '/api/request/' + request['id'])
-        self.assertEqual(page['detail']['boundary'], derived)  # what the owner approves
+        self.assertEqual((page['detail']['boundary'], page['detail']['unverified']), (derived, media))
         grant = self.stack.approve(request)['outcome']['grant']
         approvals = self.requests()
 
@@ -198,6 +228,8 @@ class MediaStack(unittest.TestCase):
         error = self.denied('change', wider)
         self.assertEqual(error['error'], 'boundary_exceeded')
         self.assertEqual(error['detail'], [f'mount {self.v1}/download/other (rw)'])
+        nested = self.compose_text.replace('      - cache:/cache', f'      - cache:/cache\n      - {self.v1}/download/bangumi/sub:/sub')
+        self.assertEqual(self.denied('change', nested)['error'], 'unverifiable_path')
 
         # Host takeover and the deployer stay out of reach whatever is approved.
         deployer_id = compose.project_containers('cd-deployer')[0]['id']
@@ -235,6 +267,8 @@ class MediaStack(unittest.TestCase):
         self.job(self.agent('up', project=PROJECT))
         self.assertEqual(compose.observed_identity(PROJECT), identity)
         self.assertTrue(any(config.rglob('*')))
+        self.assertEqual((self.v1 / 'download/bangumi/keep.mkv').read_bytes(), b'media')
+        self.assertEqual(self.volume_state(), self.volume)
         self.assertEqual(self.requests(), approvals + 2)
 
 

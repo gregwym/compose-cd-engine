@@ -225,8 +225,9 @@ class Gateway:
             # owner approves the project's whole boundary once instead of one feature at a time.
             boundary = self.runner('authorize_boundary', identity=identity, boundary=arg(args, 'boundary', dict, {}),
                                    new=bool(args.get('new')), compose_text=arg(args, 'compose', str, required=False))
+            unverified = boundary.pop('unverified', [])  # outside the runner's view: symlinks not checked
             detail = {'identity': identity, 'lifetime': self.reusable_lifetime(args), 'scope': 'manage',
-                      'boundary': boundary, 'new': bool(args.get('new'))}
+                      'boundary': boundary, 'unverified': unverified, 'new': bool(args.get('new'))}
         elif kind == 'elevated':
             if not manage:
                 raise Denied('not_authorized', 'manage grant required first')
@@ -338,7 +339,7 @@ class Gateway:
     def public_preview(self, item):
         # Capability URL exposes only an allowlisted, value-free review projection.
         detail = item['detail']
-        safe = {k: detail[k] for k in ('identity', 'lifetime', 'scope', 'boundary', 'new', 'service', 'signer', 'config', 'url', 'target_port', 'https_port') if k in detail}
+        safe = {k: detail[k] for k in ('identity', 'lifetime', 'scope', 'boundary', 'unverified', 'new', 'service', 'signer', 'config', 'url', 'target_port', 'https_port') if k in detail}
         if 'plan' in detail:
             plan = detail['plan']
             safe['plan'] = {'identity': plan['identity'], 'new': plan.get('new', False),

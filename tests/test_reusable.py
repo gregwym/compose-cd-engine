@@ -154,13 +154,45 @@ class Boundaries(unittest.TestCase):
         self.check({'volumes': [mount]})
         # The project's own directory needs no boundary, even before Docker creates the path.
         self.check({'volumes': [{**mount, 'source': self.identity['working_dir'] + '/config', 'read_only': False}]})
-        for source, ro, code in [(str(self.root), False, 'boundary_exceeded'), ('/tmp', True, 'not_visible')]:
+        for source, ro in [(str(self.root), False), ('/srv/media', True)]:
             with self.subTest(source=source), self.assertRaises(Denied) as exc:
                 self.check({'volumes': [{**mount, 'source': source, 'read_only': ro}]})
-            self.assertEqual(exc.exception.code, code)
+            self.assertEqual(exc.exception.code, 'boundary_exceeded')
         (self.root / 'link').symlink_to('/etc')
-        with self.assertRaises(Denied):
+        with self.assertRaises(Denied) as exc:
             self.check({'volumes': [{**mount, 'source': str(self.root / 'link')}]})
+        self.assertEqual(exc.exception.code, 'policy')
+        # A visible symlink that leads outside the runner's view is checked as its (unverified) target.
+        (self.root / 'out').symlink_to('/srv/media')
+        with self.assertRaises(Denied) as exc:
+            self.check({'volumes': [{**mount, 'source': str(self.root / 'out/x'), 'read_only': False}]})
+        self.assertEqual(exc.exception.detail, ['mount /srv/media/x (rw)'])
+
+    def test_paths_outside_the_runner_view_are_lexical_and_unverified(self):
+        self.boundary = {'mounts': [{'path': '/srv/media/a', 'mode': 'rw'}, {'path': '/srv/ro', 'mode': 'ro'}]}
+        bind = lambda source, ro=False: {'type': 'bind', 'source': source, 'target': '/m', 'read_only': ro}
+        # Never read: none of these exist, the runner only compares paths.
+        self.check({'volumes': [bind('/srv/media/a'), bind('/srv/ro/sub', True), bind('/srv/./ro/', True)]})
+        ctx = boundary.Scope('app', self.identity['working_dir'], '', (str(self.root),))
+        self.assertEqual(boundary.unverified(boundary.canonical(self.boundary, ''), ctx), ['/srv/media/a', '/srv/ro'])
+        # Inside a directory the project can write, a symlink it planted would redirect the mount.
+        for volumes in ([bind('/srv/media/a/sub')], [bind('/srv/media/a/sub', True)]):
+            with self.subTest(volumes=volumes), self.assertRaises(Denied) as exc:
+                self.check({'volumes': volumes})
+            self.assertEqual(exc.exception.code, 'unverifiable_path')
+        self.boundary = {'mounts': [{'path': '/srv', 'mode': 'rw'}]}
+        with self.assertRaises(Denied) as exc:
+            self.check({'volumes': [bind('/srv/media')]})
+        self.assertEqual(exc.exception.code, 'unverifiable_path')
+        # Lexical checks still forbid the host and the deployer.
+        for source in ('/etc/x', '/volume1', '/volume1/@appstore/x', '/volume1/../etc', '/var/run/docker.sock'):
+            with self.subTest(source=source), self.assertRaises(Denied) as exc:
+                self.check({'volumes': [bind(source)]})
+            self.assertEqual(exc.exception.code, 'policy')
+        # Compose reads env_file inside the runner, so it must be visible.
+        with self.assertRaises(Denied) as exc:
+            self.check({'env_file': ['/srv/ro/app.env']})
+        self.assertEqual(exc.exception.code, 'not_visible')
 
     def test_host_takeover_is_forbidden_and_host_features_need_the_boundary(self):
         for service in [{'privileged': True}, {'pid': 'host'}, {'build': '.'}, {'cap_add': ['SYS_ADMIN']},

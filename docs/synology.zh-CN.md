@@ -17,9 +17,9 @@
      DEPLOY_ROOT=/volume1/docker/deployer
      PROJECTS_ROOT=/volume1/docker
      ```
-     项目挂载的媒体目录（如 `/volume1/download/bangumi`）若在其他存储空间，加 `CD_HOST_VIEW=/volume2`
-     并在 runner 的 `volumes` 中把那一行改成对应路径。runner 以只读方式看到 `CD_HOST_VIEW`，只用于检查
-     路径与符号链接；`PROJECTS_ROOT` 仍可写，`DEPLOY_ROOT` 仍被空 tmpfs 覆盖。
+     runner 只挂载 `PROJECTS_ROOT`（其中的 `DEPLOY_ROOT` 被空 tmpfs 覆盖）。项目的媒体目录（如
+     `/volume1/download/bangumi`）由 Docker 按项目的 Compose 文件挂载，runner 不挂载也不读取。这些目录
+     只做路径检查，审批页会标为"未检查符号链接"。
 2. Container Manager → 项目 → 新增 → 路径选 `DEPLOY_ROOT` → 使用现有 compose.yaml → 启动。
 
 会先运行一次 `prepare`（初始化 deployer 自己的状态和 socket 目录，完成后显示"已退出"，属正常），再启动三个容器：`tailscale`、`gateway`、`runner`。不需要 SSH 建目录或改属主。

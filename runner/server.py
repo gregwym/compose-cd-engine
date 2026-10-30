@@ -28,13 +28,13 @@ def sha(data):
 
 
 class Runner:
-    def __init__(self, projects_root, deploy_root='', health_timeout=120, host_view=()):
+    def __init__(self, projects_root, deploy_root='', health_timeout=120):
         self.root = Path(projects_root).resolve(strict=True)
         self.deploy_root = str(Path(deploy_root).resolve()) if deploy_root else ''
         self.health_timeout = health_timeout
-        # Host directories mounted into the runner at their own paths, so boundary checks can see
-        # (and follow symlinks in) every host path a project mounts.
-        self.views = (str(self.root),) + tuple(str(Path(v).resolve()) for v in host_view if v and Path(v).is_dir())
+        # The only host directory the runner sees; data directories elsewhere are mounted by the
+        # Docker daemon and checked lexically (runner/boundary.py).
+        self.views = (str(self.root),)
         self.lock = threading.Lock()
 
     # Identity -------------------------------------------------------------
@@ -92,20 +92,23 @@ class Runner:
         """The boundary a manage grant records: what was asked for, plus what the project's current
         files and an optional proposed compose.yaml need, so approved projects stay manageable."""
         identity = self.identity(identity, new=new)
+        ctx = self.scope(identity)
         result = bounds.canonical(boundary, self.deploy_root, self.views)
-        if not derive:
-            return result
-        parts = [result]
-        if not new:
-            parts.append(bounds.derive(self.structure(identity), self.scope(identity)))
-        if compose_text is not None:
+        derived = []
+        if derive and not new:
+            derived.append(bounds.derive(self.structure(identity), ctx))
+        if derive and compose_text is not None:
             if not isinstance(compose_text, str) or len(compose_text.encode()) > files.MAX_FILE:
                 raise Denied('invalid_argument', 'compose')
             env = None if new else files.read(Path(identity['working_dir']) / '.env')
             bounds.preflight(compose_text)
-            parts.append(bounds.derive(self.render(identity, compose_text.encode(), env, env_resolution=False),
-                                       self.scope(identity)))
-        return bounds.merge(*parts)
+            derived.append(bounds.derive(self.render(identity, compose_text.encode(), env, env_resolution=False), ctx))
+        result = bounds.merge(result, *derived) if derived else result
+        problems = sorted({p for need in derived for p in bounds.exposed(need, ctx, result)})
+        if problems:
+            raise Denied('unverifiable_path', problems)
+        # Shown to the owner, not stored: the grant itself keeps the boundary format.
+        return {**result, 'unverified': bounds.unverified(result, ctx)}
 
     def structure(self, identity):
         """The rendered configuration as policy sees it: env_file paths kept, not read."""
@@ -463,8 +466,7 @@ def main():
     root = os.environ.get('PROJECTS_ROOT')
     if not root:
         raise SystemExit('PROJECTS_ROOT is required')
-    runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')),
-                    os.environ.get('CD_HOST_VIEW', '').split(':'))
+    runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')))
     serve(runner)
 
 

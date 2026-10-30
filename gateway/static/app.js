@@ -97,6 +97,10 @@ function request(parent, r) {
     } else if (r.kind === 'manage') {
       el(box, 'p', '在下列数据与资源边界内持续部署、修改配置和运维，不逐次审批。', 'muted');
       el(box, 'pre', JSON.stringify(d.boundary, null, 2));
+      if ((d.unverified || []).length) {
+        el(box, 'p', 'Deployer 看不到以下宿主机目录，只做了路径检查（系统目录、卷根、Deployer 目录），未检查其中的符号链接：', 'risk');
+        el(box, 'pre', d.unverified.join('\n'));
+      }
       el(box, 'p', '读写目录内的数据可被项目修改或删除；请保留备份。', 'risk');
     } else {
       el(box, 'p', '在现有项目管理边界内重复执行 exec；到期或撤销后禁止新的高级操作。');

@@ -42,8 +42,9 @@ jobs:
           assert {'type': 'tmpfs', 'target': '/volume1/docker/deployer'}.items() <= next(
               v for v in s['runner']['volumes'] if v['type'] == 'tmpfs').items()
           assert all(v['source'].startswith('/volume1/docker/deployer/') for v in s['gateway']['volumes'])
-          assert {'source': '/volume1', 'target': '/volume1', 'read_only': True}.items() <= next(
-              v for v in s['runner']['volumes'] if v.get('source') == '/volume1').items()
+          # The runner sees PROJECTS_ROOT, its socket directory and Docker only: no data directories.
+          assert {v.get('source') for v in s['runner']['volumes'] if v['type'] == 'bind'} == {
+              '/var/run/docker.sock', '/volume1/docker', '/volume1/docker/deployer/run/runner'}
           assert all(not x.get('ports') and not x.get('privileged') for x in s.values())
           PY
   image:

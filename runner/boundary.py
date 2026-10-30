@@ -11,6 +11,13 @@ Every rendered setting falls into exactly one class:
 
 A boundary is {"mounts": [{path, mode}], "networks": [name], "volumes": [name], "host": [feature]}.
 Grants written before volumes/host existed remain valid with those lists empty.
+
+Host paths. The runner sees only PROJECTS_ROOT; the Docker daemon mounts everything else. Paths
+inside PROJECTS_ROOT are verified: symlinks are followed with realpath. Paths outside are
+unverified: checked lexically (system paths, volume roots, the deployer), never read, and listed
+as such for the owner. Docker follows symlinks in them when it mounts, which the runner cannot
+see, so an unverified path must not lie inside a host directory this project can write (see
+exposed()): the project cannot plant the symlink that would redirect its own mount.
 """
 import json
 import os
@@ -31,7 +38,7 @@ class Scope:
     project: str
     working_dir: str
     deploy_root: str = ''
-    views: tuple = ()  # host directories the runner sees at their own paths
+    views: tuple = ()  # host directories the runner sees at their own paths (PROJECTS_ROOT)
     deployer: set = field(default_factory=set)  # Compose projects that make up the deployer
 
 
@@ -44,27 +51,45 @@ def scope(identity, deploy_root, views):
 
 
 # Host paths -----------------------------------------------------------------
+def visible(path, ctx):
+    return any(policy.under(path, view) for view in ctx.views)
+
+
 def resolve(path, ctx):
-    """The host path Docker will use: symlinks in the existing prefix followed, the rest created."""
+    """The host path Docker will use. Inside the runner's view, symlinks in the existing prefix are
+    followed and the rest is created; outside it (or where a symlink leads out) the path is lexical."""
     path = policy.normal(path)
     if not path.startswith('/'):
         raise Denied('policy', 'relative host path')
     reason = policy.forbidden_path(path, ctx.deploy_root)
     if reason:
         raise Denied('policy', reason)
-    if not any(policy.under(path, view) for view in ctx.views):
-        raise Denied('not_visible', f'{path} is outside the host directories visible to the runner (CD_HOST_VIEW)')
+    if not visible(path, ctx):
+        return path
     head, rest = path, []
     while not os.path.lexists(head):
         head, tail = posixpath.split(head)
         rest.insert(0, tail)
     real = posixpath.join(os.path.realpath(head), *rest)
-    if not any(policy.under(real, view) for view in ctx.views):
-        raise Denied('not_visible', f'{path} resolves outside the host directories visible to the runner')
     reason = policy.forbidden_path(real, ctx.deploy_root)
     if reason:
         raise Denied('policy', reason)
     return real
+
+
+def unverified(boundary, ctx):
+    """Mount roots the runner cannot see, so symlinks in them were not checked."""
+    return [m['path'] for m in boundary.get('mounts', []) if not visible(m['path'], ctx)]
+
+
+def exposed(need, ctx, *granted):
+    """Unverified paths inside a host directory this project mounts, or may mount, read-write.
+
+    The project's containers (and exec) can create symlinks there, and Docker would follow them
+    on the next mount without the runner seeing it. Mount that directory itself instead."""
+    writable = [m['path'] for b in (need, *granted) for m in b.get('mounts', []) if m['mode'] == 'rw']
+    return sorted(f'{p} is inside writable {w}; symlinks there cannot be checked, mount {w} itself'
+                  for p in unverified(need, ctx) for w in set(writable) if p != w and policy.under(p, w))
 
 
 def covered(path, write, mounts):
@@ -87,7 +112,7 @@ def canonical(boundary, deploy_root, views=None):
         path = item['path']
         if not isinstance(path, str) or not path.startswith('/') or policy.normal(path) != path:
             raise Denied('unsafe_boundary', 'mount roots must be absolute normalized paths')
-        if views is not None:
+        if views is not None:  # verified where the runner sees the path, lexical elsewhere
             if resolve(path, Scope('', '', deploy_root, tuple(views))) != path:
                 raise Denied('unsafe_boundary', f'{path} is not canonical (symlink)')
         elif policy.forbidden_source(path, deploy_root):
@@ -233,6 +258,8 @@ def derive(config, ctx):
         for item in service.get('env_file') or []:
             path = item.get('path') if isinstance(item, dict) else item
             if isinstance(path, str) and (os.path.lexists(path) or not (isinstance(item, dict) and item.get('required') is False)):
+                if not visible(policy.normal(path), ctx):  # Compose reads it inside the runner
+                    raise Denied('not_visible', f'{name}: env_file must be inside PROJECTS_ROOT')
                 needs.path(path, False)
         for mount in service.get('volumes') or []:
             kind = mount.get('type') if isinstance(mount, dict) else None
@@ -291,4 +318,7 @@ def check(config, identity, boundary, ctx):
     gaps = missing(need, boundary)
     if gaps:
         raise Denied('boundary_exceeded', gaps)
+    problems = exposed(need, ctx, boundary)
+    if problems:
+        raise Denied('unverifiable_path', problems)
     return boundary
