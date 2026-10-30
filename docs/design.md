@@ -158,8 +158,8 @@ secrets remain a best-effort limitation.
 
 Request kind=manage for one immutable project identity with boundary JSON:
 {"mounts":[{"path":"/volume1/media","mode":"ro"}],"networks":["shared-edge"]}.
-Mount roots and sources must exist, be canonical and visible to runner; sources
-must stay under an approved root without ro-to-rw escalation. new=true authorizes
+Mount roots and sources are compared as written (see Project boundaries); sources must stay
+under an approved root without ro-to-rw escalation. new=true authorizes
 a not-yet-created project under PROJECTS_ROOT, then request create deploys it.
 Read/manage accept permanent=true, otherwise days=1..30 (default seven). Repeated
 change/create/down under manage return jobs without approval. Lifecycle rechecks
@@ -285,9 +285,23 @@ containers and check only identity. `exec` checks identity, that the container i
 project's, and that it has no forbidden host access. Docker's default `CgroupnsMode=host`
 on cgroup v1 hosts (DSM 7) is not treated as host access.
 
-Host paths must be visible to the runner so symlinks are resolved before the check: the
-runner sees PROJECTS_ROOT and, read-only, `CD_HOST_VIEW` (default `/volume1` in
-synology/compose.yaml). Paths outside both fail with `not_visible`. Paths inside the project
-directory need no boundary, even before Docker creates them. Remaining lexical preflight:
+Host paths (2026-10-30). The runner mounts PROJECTS_ROOT (DEPLOY_ROOT covered by an empty
+tmpfs), its socket directory and the Docker socket, and nothing else. Data directories such
+as `/volume1/download/bangumi` are mounted by the Docker daemon from the Compose file. The
+runner never mounts, lists, reads or resolves them: a host path is normalized and compared
+with the grant as written. Paths inside the project directory need no boundary.
+
+What still holds: the hard limits (system paths, volume roots and `@` directories,
+`docker.sock`, the deployer directory) are checked on the written path, and also on the
+symlink target where the path is inside PROJECTS_ROOT, the only place the runner can see.
+What does not: Docker follows symlinks in a bind source when it creates a container, and the
+runner does not check them. A symlink inside an authorized data directory (planted by the
+project itself, by exec, by another project or by a NAS user) can redirect a mount anywhere,
+including a system path or the deployer directory, and the runner will not notice. Likewise a
+symlink in the project directory can lead to a data directory outside the grant. The grant
+limits what the Compose file may name, not what the names point to. This replaces
+`CD_HOST_VIEW`, which resolved `/volume1` symlinks but mounted the whole data volume into the
+runner. `env_file` is read by Compose inside the runner, so it must be inside PROJECTS_ROOT
+(`not_visible`). Exec rejects containers whose live bind sources hit a hard limit. Remaining lexical preflight:
 `include`, `extends` and `label_file` (they load files the rendered output cannot show),
 backslash escapes and YAML tags.

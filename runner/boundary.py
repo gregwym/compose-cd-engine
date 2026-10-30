@@ -11,10 +11,14 @@ Every rendered setting falls into exactly one class:
 
 A boundary is {"mounts": [{path, mode}], "networks": [name], "volumes": [name], "host": [feature]}.
 Grants written before volumes/host existed remain valid with those lists empty.
+
+Host paths are authorized as written: normalized and compared with the grant, never read or
+resolved. The runner sees only PROJECTS_ROOT; the Docker daemon mounts data directories from the
+Compose file. The hard limits in policy (system paths, volume roots, docker.sock, the deployer)
+still apply, lexically and, inside PROJECTS_ROOT, to symlink targets.
 """
 import json
 import os
-import posixpath
 import re
 from dataclasses import dataclass, field
 from runner import policy, compose
@@ -31,7 +35,7 @@ class Scope:
     project: str
     working_dir: str
     deploy_root: str = ''
-    views: tuple = ()  # host directories the runner sees at their own paths
+    views: tuple = ()  # host directories the runner sees at their own paths (PROJECTS_ROOT)
     deployer: set = field(default_factory=set)  # Compose projects that make up the deployer
 
 
@@ -44,27 +48,19 @@ def scope(identity, deploy_root, views):
 
 
 # Host paths -----------------------------------------------------------------
+def visible(path, ctx):
+    return any(policy.under(path, view) for view in ctx.views)
+
+
 def resolve(path, ctx):
-    """The host path Docker will use: symlinks in the existing prefix followed, the rest created."""
+    """The host path as written, normalized; hard limits apply (policy.forbidden_source)."""
     path = policy.normal(path)
     if not path.startswith('/'):
         raise Denied('policy', 'relative host path')
-    reason = policy.forbidden_path(path, ctx.deploy_root)
+    reason = policy.forbidden_source(path, ctx.deploy_root)
     if reason:
         raise Denied('policy', reason)
-    if not any(policy.under(path, view) for view in ctx.views):
-        raise Denied('not_visible', f'{path} is outside the host directories visible to the runner (CD_HOST_VIEW)')
-    head, rest = path, []
-    while not os.path.lexists(head):
-        head, tail = posixpath.split(head)
-        rest.insert(0, tail)
-    real = posixpath.join(os.path.realpath(head), *rest)
-    if not any(policy.under(real, view) for view in ctx.views):
-        raise Denied('not_visible', f'{path} resolves outside the host directories visible to the runner')
-    reason = policy.forbidden_path(real, ctx.deploy_root)
-    if reason:
-        raise Denied('policy', reason)
-    return real
+    return path
 
 
 def covered(path, write, mounts):
@@ -72,8 +68,8 @@ def covered(path, write, mounts):
 
 
 # Boundary documents -----------------------------------------------------------
-def canonical(boundary, deploy_root, views=None):
-    """Validate a requested or stored boundary; views=None skips host visibility (legacy callers)."""
+def canonical(boundary, deploy_root):
+    """Validate a requested or stored boundary."""
     if not isinstance(boundary, dict) or set(boundary) - set(KEYS):
         raise Denied('invalid_boundary')
     mounts = boundary.get('mounts', [])
@@ -87,10 +83,7 @@ def canonical(boundary, deploy_root, views=None):
         path = item['path']
         if not isinstance(path, str) or not path.startswith('/') or policy.normal(path) != path:
             raise Denied('unsafe_boundary', 'mount roots must be absolute normalized paths')
-        if views is not None:
-            if resolve(path, Scope('', '', deploy_root, tuple(views))) != path:
-                raise Denied('unsafe_boundary', f'{path} is not canonical (symlink)')
-        elif policy.forbidden_source(path, deploy_root):
+        if policy.forbidden_source(path, deploy_root):
             raise Denied('unsafe_boundary', policy.forbidden_source(path, deploy_root))
         if result.get(path) != 'rw':
             result[path] = item['mode']
@@ -141,7 +134,7 @@ class Needs:
 
     def path(self, path, write):
         real = resolve(path, self.ctx)
-        if policy.under(real, os.path.realpath(self.ctx.working_dir)):
+        if policy.under(real, self.ctx.working_dir):
             return
         if write or real not in self.mounts:
             self.mounts[real] = 'rw' if write else self.mounts.get(real, 'ro')
@@ -233,6 +226,8 @@ def derive(config, ctx):
         for item in service.get('env_file') or []:
             path = item.get('path') if isinstance(item, dict) else item
             if isinstance(path, str) and (os.path.lexists(path) or not (isinstance(item, dict) and item.get('required') is False)):
+                if not visible(policy.normal(path), ctx):  # Compose reads it inside the runner
+                    raise Denied('not_visible', f'{name}: env_file must be inside PROJECTS_ROOT')
                 needs.path(path, False)
         for mount in service.get('volumes') or []:
             kind = mount.get('type') if isinstance(mount, dict) else None

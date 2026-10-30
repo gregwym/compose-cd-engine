@@ -154,13 +154,37 @@ class Boundaries(unittest.TestCase):
         self.check({'volumes': [mount]})
         # The project's own directory needs no boundary, even before Docker creates the path.
         self.check({'volumes': [{**mount, 'source': self.identity['working_dir'] + '/config', 'read_only': False}]})
-        for source, ro, code in [(str(self.root), False, 'boundary_exceeded'), ('/tmp', True, 'not_visible')]:
+        for source, ro in [(str(self.root), False), ('/srv/media', True)]:
             with self.subTest(source=source), self.assertRaises(Denied) as exc:
                 self.check({'volumes': [{**mount, 'source': source, 'read_only': ro}]})
-            self.assertEqual(exc.exception.code, code)
+            self.assertEqual(exc.exception.code, 'boundary_exceeded')
         (self.root / 'link').symlink_to('/etc')
-        with self.assertRaises(Denied):
+        with self.assertRaises(Denied) as exc:
             self.check({'volumes': [{**mount, 'source': str(self.root / 'link')}]})
+        self.assertEqual(exc.exception.code, 'policy')
+        # Authorized as written: a symlink is not followed (only hard limits look at its target).
+        (self.root / 'out').symlink_to('/srv/media')
+        with self.assertRaises(Denied) as exc:
+            self.check({'volumes': [{**mount, 'source': str(self.root / 'out/x'), 'read_only': False}]})
+        self.assertEqual(exc.exception.detail, [f'mount {self.root}/out/x (rw)'])
+
+    def test_data_paths_are_authorized_as_written(self):
+        self.boundary = {'mounts': [{'path': '/srv/media/a', 'mode': 'rw'}, {'path': '/srv/ro', 'mode': 'ro'}]}
+        bind = lambda source, ro=False: {'type': 'bind', 'source': source, 'target': '/m', 'read_only': ro}
+        # None of these exist; the runner only compares paths.
+        self.check({'volumes': [bind('/srv/media/a'), bind('/srv/media/a/sub'), bind('/srv/ro/sub', True),
+                                bind('/srv/./ro/', True)]})
+        with self.assertRaises(Denied) as exc:
+            self.check({'volumes': [bind('/srv/ro/sub')]})
+        self.assertEqual(exc.exception.code, 'boundary_exceeded')
+        for source in ('/etc/x', '/volume1', '/volume1/@appstore/x', '/volume1/../etc', '/var/run/docker.sock'):
+            with self.subTest(source=source), self.assertRaises(Denied) as exc:
+                self.check({'volumes': [bind(source)]})
+            self.assertEqual(exc.exception.code, 'policy')
+        # Compose reads env_file inside the runner, so it must be there.
+        with self.assertRaises(Denied) as exc:
+            self.check({'env_file': ['/srv/ro/app.env']})
+        self.assertEqual(exc.exception.code, 'not_visible')
 
     def test_host_takeover_is_forbidden_and_host_features_need_the_boundary(self):
         for service in [{'privileged': True}, {'pid': 'host'}, {'build': '.'}, {'cap_add': ['SYS_ADMIN']},

@@ -97,6 +97,7 @@ function request(parent, r) {
     } else if (r.kind === 'manage') {
       el(box, 'p', '在下列数据与资源边界内持续部署、修改配置和运维，不逐次审批。', 'muted');
       el(box, 'pre', JSON.stringify(d.boundary, null, 2));
+      el(box, 'p', '宿主机路径按字面授权：Deployer 不访问、不验证这些目录，也不检查其中的符号链接。', 'muted');
       el(box, 'p', '读写目录内的数据可被项目修改或删除；请保留备份。', 'risk');
     } else {
       el(box, 'p', '在现有项目管理边界内重复执行 exec；到期或撤销后禁止新的高级操作。');

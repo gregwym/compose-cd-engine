@@ -2,7 +2,6 @@
 # Put a .env next to this file with at least:
 #   DEPLOY_ROOT=/volume1/docker/deployer
 #   PROJECTS_ROOT=/volume1/docker
-# Optional: CD_HOST_VIEW=/volume1 (host directory the runner sees read-only; see runner below)
 name: compose-deployer
 
 x-engine: &engine
@@ -83,14 +82,9 @@ services:
       HOME: /tmp
       DEPLOY_ROOT: ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}
       PROJECTS_ROOT: ${PROJECTS_ROOT:-/volume1/docker}
-      CD_HOST_VIEW: ${CD_HOST_VIEW:-/volume1}
       CD_HEALTH_TIMEOUT: ${CD_HEALTH_TIMEOUT:-120}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Read-only view of the host volume at its own path, so the runner can check (and resolve
-      # symlinks in) media directories that projects mount outside PROJECTS_ROOT. The mounts below
-      # are deeper paths, so Docker layers them on top: PROJECTS_ROOT stays writable, DEPLOY_ROOT empty.
-      - ${CD_HOST_VIEW:-/volume1}:${CD_HOST_VIEW:-/volume1}:ro
       # Same path inside and outside, so Compose labels and relative mounts match Container Manager.
       - ${PROJECTS_ROOT:-/volume1/docker}:${PROJECTS_ROOT:-/volume1/docker}
       # Empty over the deployer's own directory: env_file, include and extends are read here while
