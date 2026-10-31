@@ -83,6 +83,8 @@ services:
       DEPLOY_ROOT: ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}
       PROJECTS_ROOT: ${PROJECTS_ROOT:-/volume1/docker}
       CD_HEALTH_TIMEOUT: ${CD_HEALTH_TIMEOUT:-120}
+      # Pulls are refused below this much free space on PROJECTS_ROOT (plus twice the download); 0 disables.
+      CD_MIN_FREE_MB: ${CD_MIN_FREE_MB:-1024}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Same path inside and outside, so Compose labels and relative mounts match Container Manager.

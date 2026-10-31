@@ -47,6 +47,19 @@ jobs:
               '/var/run/docker.sock', '/volume1/docker', '/volume1/docker/deployer/run/runner'}
           assert all(not x.get('ports') and not x.get('privileged') for x in s.values())
           PY
+      - name: Validate the public webhook override
+        run: |
+          printf 'CD_HOOK_URL=https://hooks.example.com\n' >> /tmp/ci.env
+          docker compose --env-file /tmp/ci.env -f synology/compose.yaml -f synology/compose.hooks.yaml config --format json > /tmp/hooks.json
+          python3 - <<'PY'
+          import json
+          s = json.load(open('/tmp/hooks.json'))['services']
+          # Only the webhook listener, on host loopback by default, for an existing reverse proxy.
+          assert s['tailscale']['ports'] == [{'mode': 'ingress', 'host_ip': '127.0.0.1', 'target': 18791,
+                                              'published': '18791', 'protocol': 'tcp'}], s['tailscale']['ports']
+          assert all(not s[name].get('ports') for name in ('prepare', 'gateway', 'runner'))
+          assert s['gateway']['environment']['CD_HOOK_BIND'] == '0.0.0.0'
+          PY
   image:
     needs: validate
     runs-on: ubuntu-latest

@@ -95,6 +95,16 @@ Authenticated matching webhook payload hashes are deduplicated for seven days.
 Webhooks only wake polling; current branch head is resolved independently, so stale
 delivery cannot select an old digest.
 
+Pull triggers (`tag`, docs/design.md "Pull triggers") do not edit files. GitHub-sourced ones
+require the workflow/branch Cosign signature on the tag's digest; registry-sourced ones trust the
+upstream registry and tag, with no signature: approve them only for images you would update by
+hand anyway. The runner checks the pulled image carries a verified digest before recreating. Files
+identical to those approved with the trigger are not re-checked, so a project approved with
+hard-policy violations (listed on the approval page) keeps being updated; any change to its
+Compose files or `.env` brings the full check back. Files those load are not part of that
+comparison. The optional public webhook listener serves only `/hooks/`, requires the per-trigger
+HMAC and can only wake a check.
+
 Gateway.public_preview(item) is the HTTP review contract for anonymous and owner
 sessions: structural safe_diff from before/after rendered config, no raw compose,
 diff, env values or job outcomes. Legacy requests without safe_diff show a withheld

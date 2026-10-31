@@ -1,0 +1,19 @@
+# Optional override: publish ONLY the webhook listener on the host, for a server that already
+# runs a public reverse proxy (for example a VPS). The owner page and the agent API stay
+# tailnet-only behind Tailscale Serve and Passkeys; Funnel is not needed.
+#
+#   docker compose -f compose.yaml -f compose.hooks.yaml up -d
+#
+# .env:
+#   CD_HOOK_URL=https://hooks.example.com    public HTTPS base your proxy forwards /hooks/ from
+#   CD_HOOK_PUBLISH=127.0.0.1:18791          host address:port the proxy connects to (default)
+#
+# Proxy only the /hooks/ path to http://127.0.0.1:18791/hooks/ over HTTPS.
+services:
+  tailscale:
+    # gateway shares this container's network namespace, so its listener is published here.
+    ports: ['${CD_HOOK_PUBLISH:-127.0.0.1:18791}:18791']
+  gateway:
+    environment:
+      CD_HOOK_BIND: 0.0.0.0
+      CD_HOOK_URL: ${CD_HOOK_URL:?set CD_HOOK_URL to the public https base of the webhook listener}

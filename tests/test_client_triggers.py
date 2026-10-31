@@ -119,5 +119,82 @@ class Triggers(unittest.TestCase):
             triggers.webhook(body, signature, 'workflow_run', 'other', CONFIG)
 
 
+class PullTriggers(unittest.TestCase):
+    INDEX, PLATFORM = 'sha256:' + 'i' * 64, 'sha256:' + 'p' * 64
+
+    def patches(self, head=None, run=None):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(mock.patch.object(triggers, 'github', return_value={'id': 42}))
+        stack.enter_context(mock.patch('shared.registry.auth', return_value='t'))
+        stack.enter_context(mock.patch('shared.registry.head', return_value=head))
+        stack.enter_context(mock.patch('shared.registry.manifest', return_value=({}, self.INDEX)))
+        stack.enter_context(mock.patch('shared.registry.resolve', return_value=(self.PLATFORM, {
+            'config': {'size': 10, 'digest': 'sha256:' + 'c' * 64}, 'layers': [{'size': 100}, {'size': 5}]})))
+        stack.enter_context(mock.patch('shared.registry.labels', return_value={'org.opencontainers.image.revision': 'c' * 40}))
+        calls = []
+        stack.enter_context(mock.patch('subprocess.run', run or (
+            lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0, b'', b''))))
+        return stack, calls
+
+    def test_registry_source_shape(self):
+        config = triggers.validate({'source': 'registry', 'image': 'diygod/rsshub'})
+        self.assertEqual(config, {'source': 'registry', 'image': 'docker.io/diygod/rsshub', 'tag': 'latest',
+                                  'platform': 'linux/amd64'})
+        self.assertTrue(triggers.pulls(config))
+        self.assertIsNone(triggers.identity(config))
+        self.assertEqual(triggers.label(config), 'docker.io/diygod/rsshub:latest')
+        for bad in ({'repository': 'owner/app'}, {'tag': 'bad tag'}, {'image': 'quay.io/x/y'}, {'source': 'git'}):
+            with self.assertRaises(Denied):
+                triggers.validate({'source': 'registry', 'image': 'diygod/rsshub', **bad})
+
+    def test_github_tag_is_signed_and_resolved(self):
+        stack, calls = self.patches()
+        with stack:
+            found = triggers.tagged({**CONFIG, 'tag': 'latest'})
+        self.assertEqual(found, {'digest': self.INDEX, 'digests': sorted({self.INDEX, self.PLATFORM}),
+                                 'image': 'ghcr.io/owner/app@' + self.PLATFORM, 'size': 115, 'commit': 'c' * 40})
+        self.assertIn('https://github.com/owner/app/.github/workflows/docker.yml@refs/heads/main', calls[0])
+        self.assertEqual(calls[0][-1], 'ghcr.io/owner/app@' + self.INDEX)
+
+    def test_unchanged_tag_costs_one_head_request(self):
+        stack, calls = self.patches(head=self.INDEX)
+        with stack, mock.patch('shared.registry.manifest', side_effect=AssertionError('no GET')):
+            self.assertEqual(triggers.tagged({**CONFIG, 'tag': 'latest'}, [self.INDEX]), {'digest': self.INDEX})
+        self.assertEqual(calls, [])
+
+    def test_registry_source_needs_no_signature(self):
+        def run(argv, **kwargs):
+            raise AssertionError('cosign must not run')
+        stack, _ = self.patches(run=run)
+        config = triggers.validate({'source': 'registry', 'image': 'docker.io/rustdesk/rustdesk-server'})
+        with stack:
+            self.assertEqual(triggers.tagged(config)['digest'], self.INDEX)
+
+    def test_unsigned_tag_is_refused(self):
+        stack, _ = self.patches(run=lambda argv, **kw: subprocess.CompletedProcess(argv, 1, b'', b'no signatures'))
+        with stack, self.assertRaises(Denied) as caught:
+            triggers.tagged({**CONFIG, 'tag': 'latest'})
+        self.assertEqual(caught.exception.code, 'signature_invalid')
+
+    def test_registry_webhook_accepts_any_signed_post(self):
+        import hashlib
+        import hmac
+        config = {'source': 'registry', 'image': 'docker.io/diygod/rsshub', 'tag': 'latest'}
+        body = b'{"anything": 1}'
+        signature = 'sha256=' + hmac.new(b's', body, hashlib.sha256).hexdigest()
+        self.assertTrue(triggers.webhook(body, signature, None, 's', config))
+        with self.assertRaises(Denied):
+            triggers.webhook(body, signature, None, 'other', config)
+
+    def test_tag_and_size_helpers(self):
+        from shared import registry
+        self.assertEqual(registry.tag('diygod/rsshub'), 'latest')
+        self.assertEqual(registry.tag('localhost:5000/app:1.2'), '1.2')
+        self.assertEqual(registry.tag('localhost:5000/app'), 'latest')
+        self.assertIsNone(registry.tag('ghcr.io/a/b@sha256:' + 'a' * 64))
+        self.assertEqual(registry.size({'config': {'size': 1}, 'layers': [{'size': 2}]}), 3)
+
+
 if __name__ == '__main__':
     unittest.main()

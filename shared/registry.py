@@ -44,6 +44,20 @@ def manifest(image, ref, token):
         raise ValueError('manifest digest mismatch')
     return json.loads(raw), digest
 
+def head(image, ref, token):
+    """Digest a tag points to, without downloading the manifest (HEAD is not a Docker Hub pull)."""
+    host, name = locate(image)
+    if not re.fullmatch(r'[A-Za-z0-9_.:-]+', ref):
+        raise ValueError('bad reference')
+    request = urllib.request.Request(f'https://{host}/v2/{name}/manifests/{ref}', method='HEAD',
+                                     headers={'Authorization': 'Bearer ' + token, 'Accept': ACCEPT})
+    with urllib.request.urlopen(request, timeout=30) as r:
+        if not r.url.startswith('https://'):
+            raise ValueError('HTTPS required')
+        value = r.headers.get('Docker-Content-Digest', '')
+    return value if DIGEST.fullmatch(value) else None
+
+
 def resolve(image, ref, platform='linux/amd64'):
     token = auth(image)
     doc, digest = manifest(image, ref, token)
@@ -78,3 +92,17 @@ def repository(ref):
     if '/' not in name or ('.' not in first and ':' not in first and first != 'localhost'):
         name = 'docker.io/' + (name if '/' in name else 'library/' + name)
     return name
+
+
+def tag(ref):
+    """Tag of an image reference ('latest' when omitted), or None when it is pinned by digest."""
+    if '@' in ref:
+        return None
+    last = ref.rsplit('/', 1)[-1]
+    return last.split(':', 1)[1] if ':' in last else 'latest'
+
+
+def size(manifest_doc):
+    """Compressed bytes a pull of this platform manifest downloads at most."""
+    parts = list(manifest_doc.get('layers') or []) + [manifest_doc.get('config') or {}]
+    return sum(int(p.get('size') or 0) for p in parts if isinstance(p, dict))

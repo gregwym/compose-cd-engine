@@ -120,9 +120,20 @@ function request(parent, r) {
     el(box, 'p', `移除 https 端口 ${d.https_port} 的发布`);
   } else if (r.kind === 'trigger') {
     identity(box, d.identity);
-    el(box, 'p', `服务 ${d.service} 将自动更新为 GitHub ${d.config.repository} 分支 ${d.config.branch} 最新提交构建的镜像。`);
-    el(box, 'p', `镜像：${d.config.image}（${d.config.platform}），必须由 ${d.signer} 签名。`, 'muted');
-    el(box, 'p', '每次更新只改这个服务的镜像；健康检查失败自动恢复。', 'muted');
+    const c = d.config;
+    if (c.tag) {
+      const from = c.source === 'registry' ? `上游镜像仓库的标签 ${c.image}:${c.tag}`
+        : `GitHub ${c.repository} 分支 ${c.branch} 构建并推送的 ${c.image}:${c.tag}`;
+      el(box, 'p', `服务 ${(d.services || []).join('、')} 将在 ${from} 变化时 pull 并重建（等同 Container Manager 的“更新”），不修改 compose.yaml/.env。`);
+      el(box, 'p', c.source === 'registry' ? '上游镜像没有签名校验：只信任镜像仓库和该标签。'
+        : `镜像（${c.platform}）必须由 ${d.signer} 签名，拉取后核对 digest。`, c.source === 'registry' ? 'risk' : 'muted');
+      el(box, 'p', '项目文件保持批准时的内容时不再重新审查；文件变化后每次更新都重新检查。健康检查失败自动恢复旧镜像。', 'muted');
+      for (const v of d.violations || []) el(box, 'p', '项目现有配置超出常规限制：' + v, 'risk');
+    } else {
+      el(box, 'p', `服务 ${d.service} 将自动更新为 GitHub ${c.repository} 分支 ${c.branch} 最新提交构建的镜像。`);
+      el(box, 'p', `镜像：${c.image}（${c.platform}），必须由 ${d.signer} 签名。`, 'muted');
+      el(box, 'p', '每次更新只改这个服务的镜像；健康检查失败自动恢复。', 'muted');
+    }
   }
   if (r.outcome) el(box, 'pre', JSON.stringify(r.outcome, null, 2));
   if (r.status === 'pending' && reviewable && r.binding) {
@@ -177,11 +188,15 @@ async function dashboard(session) {
   for (const t of d.triggers.filter(t => t.status === 'active')) {
     const box = el(c, 'article');
     el(box, 'h3', `${t.project} / ${t.service}`);
-    el(box, 'p', `${t.config.repository} · ${t.config.branch} → ${t.config.image}`, 'muted');
+    const registry = t.config.source === 'registry';
+    el(box, 'p', registry ? `上游 ${t.config.image}:${t.config.tag} → pull`
+      : `${t.config.repository} · ${t.config.branch} → ${t.config.image}${t.config.tag ? ':' + t.config.tag + ' → pull' : ''}`, 'muted');
     if (t.last) el(box, 'p', `上次检查 ${when(t.last.checked)}：${t.last.error || '正常'}${t.last.image ? ' · ' + t.last.image : ''}`, 'muted');
-    button(box, '显示 GitHub webhook 设置', async () => {
+    button(box, registry ? '显示 webhook 设置（可选，平时靠轮询）' : '显示 GitHub webhook 设置', async () => {
       const s = await api('trigger/' + t.id);
-      el(box, 'pre', `Payload URL: ${s.url}\nContent type: application/json\nSecret: ${s.secret}\nEvents: Workflow runs`);
+      el(box, 'pre', registry
+        ? `POST ${s.url}\nContent-Type: application/json\nX-Hub-Signature-256: sha256=<HMAC-SHA256(secret, body)>\nSecret: ${s.secret}`
+        : `Payload URL: ${s.url}\nContent type: application/json\nSecret: ${s.secret}\nEvents: Workflow runs`);
     });
     button(box, '删除', async () => { await passkey('remove_trigger', t.id); await route(); });
   }

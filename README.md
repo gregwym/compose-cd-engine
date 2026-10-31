@@ -29,7 +29,9 @@ Legacy one-shot `operate` / `change` / `serve` approvals still work as before.
   paths, host PID/IPC, kernel-level capabilities, `build:`) and anything touching the
   deployer itself, whatever the gateway asks.
 - GitHub webhooks (or 30-minute polling) update one service to the Cosign-verified
-  image built for the branch head.
+  image built for the branch head, or follow a tag (`latest`) with pull + up — signed by your
+  GitHub workflow, or an upstream image such as RSSHub. Only `/hooks/` needs to be public
+  (Funnel, or `synology/compose.hooks.yaml` behind an existing reverse proxy).
 
 Docs: [design](docs/design.md) (中文) · [Synology installation](docs/synology.zh-CN.md) (中文) ·
 [agent skill / client](client/SKILL.md) · [security](SECURITY.md)

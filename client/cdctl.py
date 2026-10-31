@@ -133,6 +133,8 @@ def main(argv=None):
     req.add_argument('--target-port', type=int)
     for name in ('service', 'repository', 'workflow', 'branch', 'image', 'platform'):
         req.add_argument('--' + name)
+    req.add_argument('--source', choices=['github', 'registry'], help='trigger: GitHub build (default) or upstream registry tag')
+    req.add_argument('--tag', help='trigger: follow this tag with pull + up (e.g. latest) instead of pinning sha-<commit>')
     req.add_argument('--wait', action='store_true', help='wait for the decision and any resulting job')
     status = sub.add_parser('status')
     status.add_argument('id')
@@ -174,7 +176,7 @@ def main(argv=None):
                       'boundary': json.loads(args.boundary.read_text()) if args.boundary else None,
                       'env_set': env_pairs(args.env_set) or None, 'env_unset': args.env_unset,
                       'https_port': args.https_port, 'target_port': args.target_port,
-                      **{k: getattr(args, k) for k in ('service', 'repository', 'workflow', 'branch', 'image', 'platform')}}
+                      **{k: getattr(args, k) for k in ('service', 'repository', 'workflow', 'branch', 'image', 'platform', 'source', 'tag')}}
             result = client.call('request', **fields)
             if args.wait and 'job' in result:
                 result = client.wait_job(result['job'])
