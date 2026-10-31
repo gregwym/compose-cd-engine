@@ -37,6 +37,20 @@ Always `read` first and edit the current text; never write a compose.yaml from m
     python3 cdctl.py request trigger <project> --service web --repository owner/repo \
         --workflow .github/workflows/docker.yml --branch main --image ghcr.io/owner/repo --wait
 
+Triggers (webhook / 30-minute polling updates; one approval each):
+
+- pin (no `--tag`): pins one service to the signed `sha-<commit>` build of the branch head,
+  editing compose.yaml/.env.
+- pull (`--tag latest`): the files keep `image: <image>:<tag>`; every service running that
+  image is pulled and recreated together (like Container Manager's update), and rolled back if
+  unhealthy. With `--source github` (default) the tag's image must be Cosign-signed by the
+  workflow on the branch. With `--source registry` (upstream images, e.g. RSSHub, RustDesk)
+  there is no signature, only the tag.
+
+      python3 cdctl.py request trigger <project> --repository owner/repo \
+          --workflow .github/workflows/docker.yml --branch main --image ghcr.io/owner/repo --tag latest --wait
+      python3 cdctl.py request trigger rsshub --source registry --image diygod/rsshub --tag latest --wait
+
 ## Manage (one approval per project, reusable)
 
     python3 cdctl.py request read --permanent --wait

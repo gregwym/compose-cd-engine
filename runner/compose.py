@@ -170,3 +170,17 @@ def retag(ref, image_id):
     if '@' not in ref:
         run([DOCKER, 'image', 'tag', image_id, ref], timeout=60)
 
+
+
+def has_digest(ref, digests):
+    """True when the local image `ref` (a reference or an image ID) was pulled as one of `digests`."""
+    result = subprocess.run([DOCKER, 'image', 'inspect', '--format', '{{json .RepoDigests}}', ref],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            env=environment(), timeout=60)
+    if result.returncode:
+        return False
+    try:
+        found = json.loads(result.stdout) or []
+    except ValueError:
+        return False
+    return any(isinstance(item, str) and item.rsplit('@', 1)[-1] in digests for item in found)

@@ -93,6 +93,8 @@ iPhone ── Passkey ───────┤
 
 webhook 密钥由 gateway 生成，只在 Passkey 登录后的主页显示。`CD_FUNNEL=1` 且存在触发源时，Funnel 只暴露 `8443` 端口（该端口只有 `/hooks/`）；不开 Funnel 时只靠轮询。
 
+上面是 pin 方式。带 `tag` 的触发源走 pull 方式，见文末 "Pull triggers"。
+
 **发布到 tailnet（Serve）**：变更审批，内容为 `https://<deployer域名>:<端口> → host.docker.internal:<项目已发布的端口>`，仅 tailnet。gateway 通过 Tailscale LocalAPI 写入整份 Serve 配置（443 给主页/agent API，8443 给 webhook，其余为批准的路由），启动时也会重写一次。
 
 ## 6. 硬策略（runner 独立执行）
@@ -305,3 +307,49 @@ runner. `env_file` is read by Compose inside the runner, so it must be inside PR
 (`not_visible`). Exec rejects containers whose live bind sources hit a hard limit. Remaining lexical preflight:
 `include`, `extends` and `label_file` (they load files the rendered output cannot show),
 backslash escapes and YAML tags.
+
+### Pull triggers (2026-10-31)
+
+A trigger with `tag` follows `<image>:<tag>` instead of pinning `sha-<commit>`:
+
+| source | Where the image comes from | Check before deploying |
+|---|---|---|
+| `github` + `tag` | the approved repository's CI pushes the tag | Cosign identity `<repo>/<workflow>@refs/heads/<branch>` on the tag's digest |
+| `registry` (`tag` default `latest`) | an upstream image on Docker Hub or GHCR (RSSHub, RustDesk) | none: the registry and the tag are trusted |
+
+Flow (gateway): HEAD the tag; if its digest is the last deployed one (or, when polling, the last
+failed one) stop there. Otherwise GET the index, verify the signature (github), resolve the
+platform manifest, and send runner `pull_image` with the image, tag, both digests, the compressed
+size and the files fingerprint approved with the trigger.
+
+Runner `pull_image`, under its lock:
+1. identity as always;
+2. files: if the config files and `.env` hash to the approved fingerprint, they are not re-checked
+   (the owner saw the project, including any hard-policy violations listed on the approval page);
+   otherwise the same check as `up`/`update` (boundary under manage, hard policy otherwise);
+3. services: every service whose rendered image is `<image>:<tag>`; they are updated together;
+4. no_change if every one already runs an image pulled as one of the digests;
+5. space: free bytes on PROJECTS_ROOT ≥ `CD_MIN_FREE_MB` + 2 × size;
+6. `pull`; each pulled reference must carry one of the digests, else re-tag the old images and stop
+   (`digest_mismatch`, nothing recreated);
+7. `up -d --no-build --pull never`, health check (§7), on failure re-tag and restore (`rolled_back`).
+
+Files are never edited, so Container Manager keeps showing `image: <image>:<tag>`. One trigger per
+followed image per project; its `service` column holds `<image>:<tag>`.
+
+Gateway records `failed` with the digest of a failed or rolled-back deployment and does not redeploy
+it on polls; a webhook retries it. Refusals (policy, identity, space) are not recorded as failed.
+Registry triggers accept any HMAC-signed JSON POST as a wake-up, without payload deduplication;
+GitHub triggers keep the workflow_run filter and seven-day deduplication. A webhook wakes only its
+own trigger.
+
+`CD_MIN_FREE_MB` (default 1024, 0 disables) also guards agent `update` and pin-mode updates.
+
+Webhook exposure: Funnel (`CD_FUNNEL=1`) as before, or `synology/compose.hooks.yaml`, which binds the
+webhook listener (only `/hooks/`) to `0.0.0.0` inside the tailscale namespace, publishes it on the
+host (`CD_HOOK_PUBLISH`, default `127.0.0.1:18791`) for an existing reverse proxy, and shows
+`CD_HOOK_URL` as the webhook address. The owner page and agent API remain tailnet-only.
+
+Limits: an unchanged fingerprint covers the config files and `.env`, not files they load
+(`env_file`, `include`, `extends`). A registry trigger deploys whatever the upstream publishes under
+the tag. No application-level health probe beyond Docker's own healthcheck.

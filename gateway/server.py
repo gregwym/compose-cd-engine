@@ -143,7 +143,7 @@ class OwnerHandler(Handler):
                     row = db.execute('SELECT id, secret FROM triggers WHERE id=?', (path[13:],)).fetchone()
                 if not row:
                     raise Denied('not_found')
-                return self.reply(200, {'url': f'https://{gateway.host}:8443/hooks/{row["id"]}', 'secret': row['secret']})
+                return self.reply(200, {'url': f'{gateway.hook_url}/hooks/{row["id"]}', 'secret': row['secret']})
             raise Denied('not_found')
         except Exception as exc:
             self.fail(exc)
@@ -254,11 +254,14 @@ def main():
     origin = 'https://' + host
     gateway = Gateway(store, os.environ.get('CD_RUNNER_SOCKET', '/run/compose-cd/runner.sock'), origin, host,
                       funnel=os.environ.get('CD_FUNNEL') == '1',
-                      apply_serve=lambda config: tailscale.apply_serve(config, socket_path))
+                      apply_serve=lambda config: tailscale.apply_serve(config, socket_path),
+                      hook_url=os.environ.get('CD_HOOK_URL') or None)
     while gateway.sync_serve() == 'failed':
         time.sleep(5)
     passkeys = Passkeys(store, host, origin)
-    hooks = Server(('127.0.0.1', tailscale.HOOK_PORT), HookHandler, gateway, passkeys)
+    # The webhook listener serves only /hooks/. CD_HOOK_BIND=0.0.0.0 lets a host reverse proxy reach it
+    # (synology/compose.hooks.yaml); the owner page and agent API stay on 127.0.0.1 behind Tailscale Serve.
+    hooks = Server((os.environ.get('CD_HOOK_BIND', '127.0.0.1'), tailscale.HOOK_PORT), HookHandler, gateway, passkeys)
     owner = Server(('127.0.0.1', tailscale.UI_PORT), OwnerHandler, gateway, passkeys)
     for target in (hooks.serve_forever, gateway.trigger_loop, lambda: enrollment_console(store, origin)):
         threading.Thread(target=target, daemon=True).start()

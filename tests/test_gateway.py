@@ -378,6 +378,87 @@ class Gateway(unittest.TestCase):
         status, data = browser.request('GET', '/api/trigger/' + tid)
         self.assertEqual(data['url'], f'https://{HOST}:8443/hooks/{tid}')
 
+    def pull_trigger(self):
+        self.stack.pair()
+        self.stack.runner.results['trigger_scope'] = {'services': ['web'], 'files': 'f' * 64,
+                                                      'violations': ['web: mounts the host root or a Docker socket']}
+        request = self.agent('request', kind='trigger', project='app', source='registry', image='diygod/rsshub')
+        self.assertEqual(request['detail']['service'], 'docker.io/diygod/rsshub:latest')
+        self.assertEqual(request['detail']['services'], ['web'])
+        status, preview = self.stack.browser.request('GET', '/api/request/' + request['id'])
+        self.assertEqual(preview['detail']['violations'], ['web: mounts the host root or a Docker socket'])
+        self.assertIsNone(preview['detail']['signer'])
+        return self.stack.approve(request)['outcome']['trigger']
+
+    def test_pull_trigger_follows_registry_tag(self):
+        tid = self.pull_trigger()
+        self.assertNotIn('repository_id', self.stack.store.dashboard()['triggers'][0]['config'])
+        index, platform = 'sha256:' + 'i' * 64, 'sha256:' + 'p' * 64
+        found = {'digest': index, 'digests': [index, platform], 'image': 'docker.io/diygod/rsshub@' + platform,
+                 'size': 7, 'commit': None}
+        with mock.patch('gateway.triggers.tagged', return_value=found) as tagged:
+            self.stack.gateway.check_triggers(force={tid})
+            self.assertEqual(tagged.call_args[0][1], [])
+        pulls = [args for op, args in self.stack.runner.calls if op == 'pull_image']
+        self.assertEqual(len(pulls), 1)
+        self.assertEqual({k: pulls[0][k] for k in ('image', 'tag', 'digests', 'size', 'files')},
+                         {'image': 'docker.io/diygod/rsshub', 'tag': 'latest', 'digests': [index, platform],
+                          'size': 7, 'files': 'f' * 64})
+        self.assertEqual(pulls[0]['identity'], self.stack.runner.identity)
+        last = self.stack.store.dashboard()['triggers'][0]['last']
+        self.assertEqual((last['digest'], last['error']), (index, None))
+        with mock.patch('gateway.triggers.tagged', return_value={'digest': index}) as tagged:
+            self.stack.gateway.check_triggers(force=True)
+            self.assertEqual(tagged.call_args[0][1], [index])
+        self.assertEqual(len([op for op, _ in self.stack.runner.calls if op == 'pull_image']), 1)
+
+    def test_failed_pull_is_not_retried_by_polling(self):
+        tid = self.pull_trigger()
+        new = 'sha256:' + 'n' * 64
+        found = {'digest': new, 'digests': [new], 'image': 'docker.io/diygod/rsshub@' + new, 'size': 0, 'commit': None}
+        self.stack.runner.results['pull_image'] = {'status': 'rolled_back', 'error': 'unhealthy'}
+        with mock.patch('gateway.triggers.tagged', return_value=found):
+            self.stack.gateway.check_triggers(force=True)
+        last = self.stack.store.dashboard()['triggers'][0]['last']
+        self.assertEqual((last['failed'], last['error']), (new, 'unhealthy'))
+        with self.stack.store.db() as db:
+            db.execute("UPDATE triggers SET last=json_set(last, '$.checked', 0)")
+        with mock.patch('gateway.triggers.tagged', return_value={'digest': new}) as tagged:
+            self.stack.gateway.check_triggers()  # a due poll
+            self.assertEqual(tagged.call_args[0][1], [new])
+        self.assertEqual(len([op for op, _ in self.stack.runner.calls if op == 'pull_image']), 1)
+        self.assertEqual(self.stack.store.dashboard()['triggers'][0]['last']['error'], 'unhealthy')
+        self.stack.runner.results['pull_image'] = {'status': 'success'}
+        with mock.patch('gateway.triggers.tagged', return_value=found) as tagged:
+            self.stack.gateway.check_triggers(force={tid})  # a webhook retries
+            self.assertEqual(tagged.call_args[0][1], [])
+        last = self.stack.store.dashboard()['triggers'][0]['last']
+        self.assertEqual((last.get('failed'), last['digest'], last['error']), (None, new, None))
+
+    def test_webhook_wakes_only_its_trigger_and_public_hook_url(self):
+        import hashlib
+        import hmac
+        tid = self.pull_trigger()
+        self.stack.gateway.hook_url = 'https://hooks.example.com'
+        status, data = self.stack.browser.request('GET', '/api/trigger/' + tid)
+        self.assertEqual(data['url'], 'https://hooks.example.com/hooks/' + tid)
+        with self.stack.gateway.woken_lock:
+            self.stack.gateway.woken.clear()
+        body = b'{}'
+        for _ in range(2):  # registry triggers only wake polling, so a repeated body is fine
+            connection = http.client.HTTPConnection('127.0.0.1', self.stack.hook_port, timeout=5)
+            connection.request('POST', '/hooks/' + tid, body, {'Content-Type': 'application/json',
+                               'X-Hub-Signature-256': 'sha256=' + hmac.new(data['secret'].encode(), body, hashlib.sha256).hexdigest()})
+            self.assertEqual(connection.getresponse().status, 202)
+        self.assertEqual(self.stack.gateway.woken, {tid})
+
+    def test_pull_trigger_service_must_run_the_image(self):
+        self.stack.pair()
+        self.stack.runner.results['trigger_scope'] = {'services': ['web'], 'files': 'f', 'violations': []}
+        error = self.agent.error('request', kind='trigger', project='app', source='registry', image='diygod/rsshub',
+                                 service='worker')
+        self.assertEqual(error, 'unknown_service')
+
     def test_restart_marks_interrupted_jobs_unknown(self):
         from gateway.store import Store
         jid = self.stack.store.create_job('agent-x', 'app', 'restart')

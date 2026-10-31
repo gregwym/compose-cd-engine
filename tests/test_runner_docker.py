@@ -179,6 +179,63 @@ class RunnerDocker(unittest.TestCase):
             self.runner.update_image(self.identity(), 'web', 'ghcr.io/evil/busybox@sha256:' + 'a' * 64)
         self.assertEqual(caught.exception.code, 'repository_mismatch')
 
+    def digest(self):
+        return self.pinned().split('@', 1)[1]
+
+    def test_pull_image_current_digest_is_no_change(self):
+        self.create()
+        scope = self.runner.trigger_scope(self.identity(), IMAGE.split(':')[0], IMAGE.split(':')[1])
+        self.assertEqual((scope['services'], scope['violations']), (['web'], []))
+        result = self.runner.pull_image(self.identity(), IMAGE.split(':')[0], IMAGE.split(':')[1], [self.digest()],
+                                        files=scope['files'])
+        self.assertEqual(result, {'status': 'no_change', 'services': ['web']})
+
+    def test_pull_image_recreates_services_on_the_verified_digest(self):
+        repo, tag = IMAGE.split(':')
+        real = self.digest()
+        subprocess.run([compose.DOCKER, 'pull', '-q', repo + ':1.35'], check=True, capture_output=True)
+        subprocess.run([compose.DOCKER, 'tag', repo + ':1.35', IMAGE], check=True)  # the "old" image
+        try:
+            two = HEALTHY + HEALTHY.split('services:\n', 1)[1].replace('  web:', '  worker:').replace('./data', './work')
+            self.create(two)
+            old = compose.image_ids(self.identity())
+            files = self.runner.trigger_scope(self.identity(), repo, tag)['files']
+            result = self.runner.pull_image(self.identity(), repo, tag, [real], size=1, files=files)
+        finally:
+            subprocess.run([compose.DOCKER, 'pull', '-q', IMAGE], check=True, capture_output=True)
+        self.assertEqual(result, {'status': 'success', 'services': ['web', 'worker']}, result)
+        now = compose.image_ids(self.identity())
+        self.assertNotEqual(now['web'][1], old['web'][1])
+        self.assertEqual(now['web'][1], now['worker'][1])
+        self.assertIn('image: ' + IMAGE, Path(self.identity()['config_files'][0]).read_text())  # files untouched
+
+    def test_pull_image_refuses_an_unverified_digest(self):
+        self.create()
+        before = compose.image_ids(self.identity())
+        repo, tag = IMAGE.split(':')
+        result = self.runner.pull_image(self.identity(), repo, tag, ['sha256:' + 'a' * 64])
+        self.assertEqual((result['status'], result['error']), ('failed', 'digest_mismatch'))
+        self.assertEqual(compose.image_ids(self.identity()), before)
+
+    def test_pull_image_rechecks_changed_files_and_space(self):
+        self.create()
+        repo, tag = IMAGE.split(':')
+        files = self.runner.trigger_scope(self.identity(), repo, tag)['files']
+        path = Path(self.identity()['config_files'][0])
+        path.write_text(path.read_text().replace('./data:/data', '/var/run/docker.sock:/var/run/docker.sock'))
+        with self.assertRaises(Denied) as caught:
+            self.runner.pull_image(self.identity(), repo, tag, ['sha256:' + 'a' * 64], files=files)
+        self.assertEqual(caught.exception.code, 'policy')
+        # Approved as it is now: not re-checked, but a pull still needs free space.
+        files = self.runner.fingerprint(self.identity())
+        self.runner.min_free = 1 << 60
+        with self.assertRaises(Denied) as caught:
+            self.runner.pull_image(self.identity(), repo, tag, ['sha256:' + 'a' * 64], files=files)
+        self.assertEqual(caught.exception.code, 'insufficient_space')
+        with self.assertRaises(Denied) as caught:
+            self.runner.pull_image(self.identity(), repo, 'other', [self.digest()], files=files)
+        self.assertEqual(caught.exception.code, 'unknown_service')
+
     def test_identity_must_match_container_labels(self):
         self.create()
         other = self.root / 'elsewhere'

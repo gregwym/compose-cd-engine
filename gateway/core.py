@@ -29,11 +29,15 @@ def arg(args, key, kind, default=None, required=True):
 
 
 class Gateway:
-    def __init__(self, store, runner_socket, origin, host, funnel=False, apply_serve=tailscale.apply_serve):
+    def __init__(self, store, runner_socket, origin, host, funnel=False, apply_serve=tailscale.apply_serve,
+                 hook_url=None):
         self.store, self.runner_socket = store, runner_socket
         self.origin, self.host, self.funnel = origin, host, funnel
         self.apply_serve = apply_serve
+        # Public base URL of the webhook listener: Funnel by default, or a reverse proxy (CD_HOOK_URL).
+        self.hook_url = (hook_url or f'https://{host}:8443').rstrip('/')
         self.wake = threading.Event()
+        self.woken, self.woken_lock = set(), threading.Lock()
         self.serve_lock = threading.Lock()
         self.threads = []
 
@@ -323,8 +327,18 @@ class Gateway:
     def trigger_detail(self, agent, project, args):
         identity = self.identity(agent, project)
         manage = self.store.grant(agent, project, 'manage')
+        config = triggers.validate({k: args[k] for k in triggers.FIELDS if k in args})
+        bound = {'manage_grant': manage['id'], 'agent': agent} if manage else {}
+        if triggers.pulls(config):
+            scope = self.runner('trigger_scope', identity=identity, image=config['image'], tag=config['tag'])
+            service = arg(args, 'service', str, required=False)
+            if service is not None and service not in scope['services']:
+                raise Denied('unknown_service', f"{service} does not run {triggers.label(config)}")
+            # One trigger per followed image: every service running it is pulled and recreated together.
+            return {'identity': identity, 'service': triggers.label(config), 'services': scope['services'],
+                    'config': {**config, 'files': scope['files']}, 'signer': triggers.identity(config),
+                    'violations': scope['violations'], **bound}
         service = arg(args, 'service', str)
-        config = triggers.validate({k: args[k] for k in ('repository', 'workflow', 'branch', 'image', 'platform') if k in args})
         listed = next((p for p in self.runner('projects')['projects'] if p['project'] == project), None)
         current = next((s['image'] for s in (listed or {}).get('services', []) if s['service'] == service), None)
         if current is None:
@@ -332,13 +346,13 @@ class Gateway:
         if repository(current) != repository(config['image']):
             raise Denied('repository_mismatch', repository(current))
         return {'identity': identity, 'service': service, 'config': config,
-                'signer': triggers.identity(config),
-                **({'manage_grant': manage['id'], 'agent': agent} if manage else {})}
+                'signer': triggers.identity(config), **bound}
 
     def public_preview(self, item):
         # Capability URL exposes only an allowlisted, value-free review projection.
         detail = item['detail']
-        safe = {k: detail[k] for k in ('identity', 'lifetime', 'scope', 'boundary', 'new', 'service', 'signer', 'config', 'url', 'target_port', 'https_port') if k in detail}
+        safe = {k: detail[k] for k in ('identity', 'lifetime', 'scope', 'boundary', 'new', 'service', 'services', 'signer', 'config',
+                                       'violations', 'url', 'target_port', 'https_port') if k in detail}
         if 'plan' in detail:
             plan = detail['plan']
             safe['plan'] = {'identity': plan['identity'], 'new': plan.get('new', False),
@@ -416,7 +430,7 @@ class Gateway:
                            (tid, project, detail['service'], wire.canonical({**detail['config'], **({'manage_grant': detail['manage_grant'], 'agent': agent} if detail.get('manage_grant') else {})}),
                             wire.canonical(detail['identity']), secrets.token_urlsafe(32), None, 'active', rid, now()))
             outcome['trigger'] = tid
-            self.wake.set()
+            self.wake_trigger(tid)
         if kind in ('serve', 'unserve', 'trigger'):
             outcome['serve'] = self.sync_serve()
         return outcome
@@ -455,23 +469,32 @@ class Gateway:
             return 'failed'
 
     # Triggers -------------------------------------------------------------
+    def wake_trigger(self, tid):
+        with self.woken_lock:
+            self.woken.add(tid)
+        self.wake.set()
+
     def webhook(self, tid, body, signature, event):
         with self.store.db() as db:
             row = db.execute("SELECT * FROM triggers WHERE id=? AND status='active'", (tid,)).fetchone()
         if not row:
             raise Denied('not_found')
-        if triggers.webhook(body, signature, event, row['secret'], self.store.decode(row)['config']):
-            self.store.nonce('hook:' + tid + ':' + wire.digest(body), ttl=7 * 86400)
-            self.wake.set()
+        config = self.store.decode(row)['config']
+        if triggers.webhook(body, signature, event, row['secret'], config):
+            if config.get('source', 'github') == 'github':
+                self.store.nonce('hook:' + tid + ':' + wire.digest(body), ttl=7 * 86400)
+            self.wake_trigger(tid)
             return True
         return False
 
     def check_triggers(self, force=False):
+        """Poll due triggers; `force` is True (all) or the ids a webhook woke."""
         with self.store.db() as db:
             rows = [self.store.decode(r) for r in db.execute("SELECT * FROM triggers WHERE status='active'").fetchall()]
         for row in rows:
             last = row['last'] or {}
-            if not force and last.get('checked', 0) + TRIGGER_INTERVAL > now():
+            forced = force is True or (bool(force) and row['id'] in force)
+            if not forced and last.get('checked', 0) + TRIGGER_INTERVAL > now():
                 continue
             state = {**last, 'checked': now(), 'error': None}
             try:
@@ -481,23 +504,10 @@ class Gateway:
                     if not manage or manage['id'] != row['config']['manage_grant']:
                         raise Denied('not_authorized')
                     self.current_grant(row['config']['agent'], manage)
-                commit, image = triggers.latest(row['config'])
-                state['commit'] = commit
-                if image != last.get('image'):
-                    jid = self.store.create_job('trigger:' + row['id'], row['project'], 'update_image')
-                    self.store.update_job(jid, 'running')
-                    try:
-                        result = (self.granted_runner(row['config']['agent'], manage, 'update_image', service=row['service'], image=image)
-                                  if manage else self.runner('update_image', identity=row['identity'], service=row['service'], image=image))
-                        self.store.update_job(jid, result.get('status', 'success'), result)
-                        if result.get('status') in ('success', 'no_change'):
-                            state['image'] = image
-                        else:
-                            state['error'] = result.get('error')
-                    except Denied as exc:
-                        self.store.update_job(jid, 'stale' if exc.code == 'stale' else 'failed',
-                                              {'error': exc.code, 'detail': exc.detail})
-                        raise
+                if triggers.pulls(row['config']):
+                    self.check_pull(row, manage, last, state, forced)
+                else:
+                    self.check_pin(row, manage, last, state, forced)
             except Denied as exc:
                 state['error'] = exc.code
             except (OSError, ValueError, KeyError) as exc:
@@ -505,12 +515,63 @@ class Gateway:
             with self.store.db() as db:
                 db.execute('UPDATE triggers SET last=? WHERE id=?', (wire.canonical(state), row['id']))
 
+    def trigger_job(self, row, manage, op, state, target, **args):
+        """Run one trigger update. A deployment that failed or was rolled back is remembered, so
+        polling does not take the service down for the same image every pass."""
+        jid = self.store.create_job('trigger:' + row['id'], row['project'], op)
+        self.store.update_job(jid, 'running')
+        try:
+            result = (self.granted_runner(row['config']['agent'], manage, op, **args)
+                      if manage else self.runner(op, identity=row['identity'], **args))
+        except Denied as exc:
+            # A refusal recreated nothing (policy, identity, space, runner down): polling may retry.
+            self.store.update_job(jid, 'stale' if exc.code == 'stale' else 'failed', {'error': exc.code, 'detail': exc.detail})
+            raise
+        self.store.update_job(jid, result.get('status', 'success'), result)
+        if result.get('status') in ('success', 'no_change'):
+            state.pop('failed', None)
+            return True
+        state['error'], state['failed'] = result.get('error') or result.get('status'), target
+        return False
+
+    @staticmethod
+    def skip_failed(last, state, target, forced):
+        # A webhook (forced) retries; a poll does not redeploy an image that already failed.
+        if not forced and last.get('failed') == target:
+            state['error'] = last.get('error') or 'failed'
+            return True
+        return False
+
+    def check_pin(self, row, manage, last, state, forced):
+        commit, image = triggers.latest(row['config'])
+        state['commit'] = commit
+        if image == last.get('image') or self.skip_failed(last, state, image, forced):
+            return
+        if self.trigger_job(row, manage, 'update_image', state, image, service=row['service'], image=image):
+            state['image'] = image
+
+    def check_pull(self, row, manage, last, state, forced):
+        config = row['config']
+        known = [d for d in (last.get('digest'), None if forced else last.get('failed')) if d]
+        found = triggers.tagged(config, known)
+        if 'image' not in found:
+            if found['digest'] == last.get('failed'):
+                state['error'] = last.get('error') or 'failed'
+            return
+        if found.get('commit'):
+            state['commit'] = found['commit']
+        if self.trigger_job(row, manage, 'pull_image', state, found['digest'], image=config['image'], tag=config['tag'],
+                            digests=found['digests'], size=found['size'], files=config.get('files')):
+            state['digest'], state['image'] = found['digest'], found['image']
+
     def trigger_loop(self):
         while True:
             woke = self.wake.wait(60)
             self.wake.clear()
+            with self.woken_lock:
+                ids, self.woken = self.woken, set()
             try:
-                self.check_triggers(force=woke)
+                self.check_triggers(force=ids if woke else False)
             except Exception as exc:  # keep polling after unexpected errors
                 print('trigger check failed: ' + type(exc).__name__, flush=True)
             time.sleep(1)

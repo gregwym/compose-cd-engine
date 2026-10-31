@@ -9,18 +9,21 @@ import os
 import re
 import socket
 import secrets
+import shutil
 import tempfile
 import threading
 import time
 from pathlib import Path
 from runner import compose, files, policy, boundary as bounds, diagnostics, execution
-from shared.registry import repository
+from shared.registry import DIGEST, repository, tag as image_tag
 from shared import preview
 from shared.wire import Denied, canonical, digest, read_line
 
 SOCKET = os.environ.get('CD_RUNNER_SOCKET', '/run/compose-cd/runner.sock')
 ACTIONS = ('start', 'stop', 'restart', 'up', 'update')
 PINNED = re.compile(r'[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}')
+IMAGE = re.compile(r'[a-z0-9][a-z0-9._/:-]*')
+TAG = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}')
 
 
 def sha(data):
@@ -28,10 +31,11 @@ def sha(data):
 
 
 class Runner:
-    def __init__(self, projects_root, deploy_root='', health_timeout=120):
+    def __init__(self, projects_root, deploy_root='', health_timeout=120, min_free_mb=1024):
         self.root = Path(projects_root).resolve(strict=True)
         self.deploy_root = str(Path(deploy_root).resolve()) if deploy_root else ''
         self.health_timeout = health_timeout
+        self.min_free = min_free_mb * 1024 * 1024
         # The only host directory the runner sees; data directories are mounted by the Docker
         # daemon and authorized as written (runner/boundary.py).
         self.views = (str(self.root),)
@@ -208,16 +212,12 @@ class Runner:
                     compose.wait_healthy(identity, self.health_timeout, services)
                 return {'status': 'success'}
             # Files may have changed since the grant; anything that (re)creates containers re-checks them.
-            if boundary is not None:
-                self.check_boundary(identity, boundary)
-            else:
-                found = policy.violations(compose.render(identity), self.deploy_root)
-                if found:
-                    raise Denied('policy', found)
+            self.check_files(identity, boundary)
             if action == 'up':
                 compose.compose(identity, 'up', '-d', '--no-build', *services)
                 compose.wait_healthy(identity, self.health_timeout, services)
                 return {'status': 'success'}
+            self.space()
             previous = compose.image_ids(identity)
             compose.compose(identity, 'pull', '--ignore-buildable', *services)
             try:
@@ -229,6 +229,27 @@ class Runner:
             now = compose.image_ids(identity)
             return {'status': 'success',
                     'updated': sorted(s for s, (_, old) in previous.items() if now.get(s, (None, old))[1] != old)}
+
+    def check_files(self, identity, boundary=None):
+        """What the files would (re)create: inside the manage boundary, or within the hard policy."""
+        if boundary is not None:
+            self.check_boundary(identity, boundary)
+            return
+        found = policy.violations(compose.render(identity), self.deploy_root)
+        if found:
+            raise Denied('policy', found)
+
+    def space(self, size=0):
+        """Refuse a pull that could fill the disk: keep CD_MIN_FREE_MB plus twice the download free.
+
+        Measured on PROJECTS_ROOT, the only host file system the runner sees; Docker's data root
+        is usually on the same one (a VPS root disk, a Synology volume)."""
+        if not self.min_free:
+            return
+        free = shutil.disk_usage(self.root).free
+        needed = self.min_free + 2 * max(0, size)
+        if free < needed:
+            raise Denied('insufficient_space', f'{free >> 20} MiB free, {needed >> 20} MiB required')
 
     def recover(self, exc, restore, identity, services=()):
         try:
@@ -385,9 +406,79 @@ class Runner:
                 return {'status': 'no_change'}
             if repository(current) != repository(image):
                 raise Denied('repository_mismatch', repository(current))
+            self.space()
             data, env_set = files.image_edit(files.read(identity['config_files'][0]), raw, image)
             plan = self.plan(identity, data.decode(), env_set, None, expect={'service': service, 'image': image}, boundary=boundary)
             return self.write_and_up(plan)
+
+
+    # Pull triggers ---------------------------------------------------------
+    def fingerprint(self, identity):
+        """The Compose files and .env as approved with a trigger."""
+        return digest({'files': [sha(files.read(f)) for f in identity['config_files']],
+                       'env': sha(files.read(Path(identity['working_dir']) / '.env'))})
+
+    @staticmethod
+    def follows(image, tag):
+        if (not isinstance(image, str) or not IMAGE.fullmatch(image) or '@' in image
+                or not isinstance(tag, str) or not TAG.fullmatch(tag)):
+            raise Denied('invalid_argument', 'image')
+        return repository(image), tag
+
+    def tagged_services(self, identity, image, tag):
+        """{service: image as written} for every service that runs image:tag."""
+        wanted = self.follows(image, tag)
+        services = compose.render(identity, env_resolution=False).get('services') or {}
+        found = {name: s['image'] for name, s in sorted(services.items())
+                 if isinstance(s.get('image'), str) and (repository(s['image']), image_tag(s['image'])) == wanted}
+        if not found:
+            raise Denied('unknown_service', f'no service runs {image}:{tag}')
+        return found
+
+    def trigger_scope(self, identity, image, tag):
+        """What a pull trigger would update, for the approval page."""
+        identity = self.identity(identity)
+        return {'services': sorted(self.tagged_services(identity, image, tag)), 'files': self.fingerprint(identity),
+                'violations': policy.violations(compose.render(identity), self.deploy_root)}
+
+    def pull_image(self, identity, image, tag, digests, size=0, files=None, boundary=None):
+        """Pull image:tag and recreate the services that run it, like Container Manager's update.
+
+        The files are not edited. While they are byte-identical to the ones approved with the
+        trigger, they are not re-checked (the owner saw the project when approving); once they
+        change, they are checked like any other (re)creation. The pulled image must carry one of
+        the digests the gateway verified, or the old image is restored and nothing is recreated."""
+        self.follows(image, tag)
+        if (not isinstance(digests, list) or not 1 <= len(digests) <= 2
+                or any(not isinstance(d, str) or not DIGEST.fullmatch(d) for d in digests)
+                or type(size) is not int or size < 0 or (files is not None and not isinstance(files, str))):
+            raise Denied('invalid_argument', 'digests/size/files')
+        with self.lock:
+            identity = self.identity(identity)
+            if files is None or files != self.fingerprint(identity):
+                self.check_files(identity, boundary)
+            services = self.tagged_services(identity, image, tag)
+            previous = compose.image_ids(identity)
+            if all(s in previous and compose.has_digest(previous[s][1], digests) for s in services):
+                return {'status': 'no_change', 'services': sorted(services)}
+            self.space(size)
+            names = sorted(services)
+            compose.compose(identity, 'pull', *names)
+
+            def restore():
+                for ref, image_id in previous.values():
+                    compose.retag(ref, image_id)
+            if not all(compose.has_digest(ref, digests) for ref in services.values()):
+                restore()
+                return {'status': 'failed', 'error': 'digest_mismatch',
+                        'detail': 'the registry served an image other than the verified one'}
+            try:
+                # --pull never: what starts is the image just checked, even with pull_policy: always.
+                compose.compose(identity, 'up', '-d', '--no-build', '--pull', 'never', *names)
+                compose.wait_healthy(identity, self.health_timeout, names)
+            except Denied as exc:
+                return self.recover(exc, restore, identity, names)
+            return {'status': 'success', 'services': names}
 
 
 def handle(runner, request):
@@ -395,6 +486,7 @@ def handle(runner, request):
     table = {'projects': runner.projects, 'logs': runner.logs, 'read': runner.read,
              'lifecycle': runner.lifecycle, 'plan': runner.plan, 'apply': runner.apply,
              'down': runner.down, 'update_image': runner.update_image,
+             'trigger_scope': runner.trigger_scope, 'pull_image': runner.pull_image,
              'authorize_boundary': runner.authorize_boundary, 'diagnose': runner.diagnose, 'exec': runner.exec}
     if op not in table or not isinstance(args, dict):
         raise Denied('unknown_operation')
@@ -461,7 +553,8 @@ def main():
     root = os.environ.get('PROJECTS_ROOT')
     if not root:
         raise SystemExit('PROJECTS_ROOT is required')
-    runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')))
+    runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')),
+                    int(os.environ.get('CD_MIN_FREE_MB', '1024')))
     serve(runner)
 
 
