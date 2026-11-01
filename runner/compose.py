@@ -172,6 +172,24 @@ def retag(ref, image_id):
 
 
 
+def remove_images(image_ids):
+    """Best-effort `docker image rm` (never forced) of each image ID; returns the ones removed.
+
+    Docker refuses images any container (running or stopped, of any project) still uses, and
+    images tagged in several repositories, so this only frees what nothing references."""
+    removed = []
+    for image_id in image_ids:
+        try:
+            result = subprocess.run([DOCKER, 'image', 'rm', image_id], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    env=environment(), timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if not result.returncode:
+            removed.append(image_id)
+    return removed
+
+
 def has_digest(ref, digests):
     """True when the local image `ref` (a reference or an image ID) was pulled as one of `digests`."""
     result = subprocess.run([DOCKER, 'image', 'inspect', '--format', '{{json .RepoDigests}}', ref],

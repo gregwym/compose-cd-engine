@@ -237,6 +237,49 @@ class TransactionalApply(unittest.TestCase):
                 self.compose.compose(identity, 'up')
         self.assertEqual(caught.exception.detail, 'invalid hostPort: ***; port 80')
 
+    def test_successful_deploy_removes_replaced_images(self):
+        ids = iter([{'web': ('app:1', 'sha256:old'), 'db': ('pg', 'sha256:db')},
+                    {'web': ('app:1', 'sha256:new'), 'db': ('pg', 'sha256:db')}])
+        with self.mock.patch.object(self.compose, 'compose', self.fake()), \
+                self.mock.patch.object(self.compose, 'wait_healthy'), \
+                self.mock.patch.object(self.compose, 'image_ids', side_effect=lambda identity: next(ids)), \
+                self.mock.patch.object(self.compose, 'remove_images', return_value=[]) as remove:
+            result = self.runner.write_and_up(self.plan())
+        self.assertEqual(result['status'], 'success')
+        remove.assert_called_once_with(['sha256:old'])
+
+    def test_rollback_and_disabled_pruning_keep_images(self):
+        timeout = self.server.Denied('timeout', 'up exceeded 1800s')
+        with self.mock.patch.object(self.compose, 'compose', self.fake(timeout)), \
+                self.mock.patch.object(self.compose, 'wait_healthy'), \
+                self.mock.patch.object(self.compose, 'image_ids', return_value={'web': ('app:1', 'sha256:old')}), \
+                self.mock.patch.object(self.compose, 'remove_images') as remove:
+            self.assertEqual(self.runner.write_and_up(self.plan())['status'], 'rolled_back')
+            remove.assert_not_called()
+        (self.wd / 'compose.yaml').write_bytes(b'old: 1\n')
+        self.runner.prune_images = False
+        with self.mock.patch.object(self.compose, 'compose', self.fake()), \
+                self.mock.patch.object(self.compose, 'wait_healthy'), \
+                self.mock.patch.object(self.compose, 'image_ids') as ids, \
+                self.mock.patch.object(self.compose, 'remove_images') as remove:
+            self.assertEqual(self.runner.write_and_up(self.plan())['status'], 'success')
+        ids.assert_not_called()
+        remove.assert_not_called()
+
+    def test_prune_failures_do_not_fail_the_deploy(self):
+        with self.mock.patch.object(self.compose, 'compose', self.fake()), \
+                self.mock.patch.object(self.compose, 'wait_healthy'), \
+                self.mock.patch.object(self.compose, 'image_ids', side_effect=OSError('no docker')):
+            self.assertEqual(self.runner.write_and_up(self.plan())['status'], 'success')
+
+    def test_remove_images_never_forces(self):
+        import subprocess
+        done = [subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1)]
+        with self.mock.patch('subprocess.run', side_effect=done) as run:
+            self.assertEqual(self.compose.remove_images(['sha256:a', 'sha256:b']), ['sha256:a'])
+        for call in run.call_args_list:
+            self.assertEqual(call.args[0][1:], ['image', 'rm', call.args[0][-1]])
+
     def test_edit_after_planning_is_stale_and_kept(self):
         (self.wd / 'compose.yaml').write_bytes(b'edited by Container Manager\n')
         with self.mock.patch.object(self.compose, 'compose', self.fake()):
