@@ -8,6 +8,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import secrets
 import shutil
 import tempfile
@@ -31,7 +32,8 @@ def sha(data):
 
 
 class Runner:
-    def __init__(self, projects_root, deploy_root='', health_timeout=120, min_free_mb=1024):
+    def __init__(self, projects_root, deploy_root='', health_timeout=120, min_free_mb=1024, prune_images=True):
+        self.prune_images = prune_images
         self.root = Path(projects_root).resolve(strict=True)
         self.deploy_root = str(Path(deploy_root).resolve()) if deploy_root else ''
         self.health_timeout = health_timeout
@@ -219,6 +221,7 @@ class Runner:
                 return {'status': 'success'}
             self.space()
             previous = compose.image_ids(identity)
+            before = self.images_in_use(identity)
             compose.compose(identity, 'pull', '--ignore-buildable', *services)
             try:
                 compose.compose(identity, 'up', '-d', '--no-build', *services)
@@ -227,6 +230,7 @@ class Runner:
                 return self.recover(exc, lambda: [compose.retag(ref, image_id) for ref, image_id in previous.values()],
                                     identity, services)
             now = compose.image_ids(identity)
+            self.prune(identity, before)
             return {'status': 'success',
                     'updated': sorted(s for s, (_, old) in previous.items() if now.get(s, (None, old))[1] != old)}
 
@@ -250,6 +254,27 @@ class Runner:
         needed = self.min_free + 2 * max(0, size)
         if free < needed:
             raise Denied('insufficient_space', f'{free >> 20} MiB free, {needed >> 20} MiB required')
+
+    def images_in_use(self, identity):
+        """Image IDs of the project's containers, for prune(); empty when pruning is off."""
+        if not self.prune_images:
+            return set()
+        try:
+            return {image_id for _, image_id in compose.image_ids(identity).values() if image_id}
+        except (Denied, OSError, subprocess.SubprocessError):
+            return set()
+
+    def prune(self, identity, before):
+        """After a successful deployment, remove the images the project ran before and no longer runs.
+
+        Never forced: images still used by any container, or tagged elsewhere, stay. Failures are
+        ignored; the deployment already succeeded. CD_PRUNE_IMAGES=0 turns this off."""
+        if not before:
+            return []
+        try:
+            return compose.remove_images(sorted(before - self.images_in_use(identity)))
+        except (Denied, OSError, subprocess.SubprocessError):
+            return []
 
     def recover(self, exc, restore, identity, services=()):
         try:
@@ -364,6 +389,7 @@ class Runner:
         data = plan['compose'].encode()
         env = files.edit_env(old_env, plan['env_set'], plan['env_unset']) if (plan['env_set'] or plan['env_unset']) else old_env
         backups = []
+        before = set() if plan['new'] else self.images_in_use(identity)
 
         def restore():
             files.write_in_place(path, old)
@@ -391,6 +417,7 @@ class Runner:
             except Denied:
                 pass
             return {'status': 'failed', 'error': exc.code, 'detail': exc.detail}
+        self.prune(identity, before)
         return {'status': 'success', 'backups': backups}
 
     def update_image(self, identity, service, image, boundary=None):
@@ -463,6 +490,7 @@ class Runner:
                 return {'status': 'no_change', 'services': sorted(services)}
             self.space(size)
             names = sorted(services)
+            before = self.images_in_use(identity)
             compose.compose(identity, 'pull', *names)
 
             def restore():
@@ -478,6 +506,7 @@ class Runner:
                 compose.wait_healthy(identity, self.health_timeout, names)
             except Denied as exc:
                 return self.recover(exc, restore, identity, names)
+            self.prune(identity, before)
             return {'status': 'success', 'services': names}
 
 
@@ -554,7 +583,8 @@ def main():
     if not root:
         raise SystemExit('PROJECTS_ROOT is required')
     runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')),
-                    int(os.environ.get('CD_MIN_FREE_MB', '1024')))
+                    int(os.environ.get('CD_MIN_FREE_MB', '1024')),
+                    os.environ.get('CD_PRUNE_IMAGES', '1').strip().lower() not in ('0', 'false', 'no', 'off'))
     serve(runner)
 
 

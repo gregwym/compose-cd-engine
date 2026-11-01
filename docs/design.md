@@ -345,6 +345,12 @@ own trigger.
 
 `CD_MIN_FREE_MB` (default 1024, 0 disables) also guards agent `update` and pin-mode updates.
 
+Old images: after a successful deployment (agent `update`, file changes, pin-mode and pull-mode
+updates), the runner runs `docker image rm` (never `-f`) on each image ID the project's containers
+used before and no longer use. Docker keeps any image still used by a container of any project or
+tagged in several repositories; failures are ignored. Rollbacks keep the old images.
+`CD_PRUNE_IMAGES=0` turns this off.
+
 Webhook exposure: Funnel (`CD_FUNNEL=1`) as before, or `synology/compose.hooks.yaml`, which binds the
 webhook listener (only `/hooks/`) to `0.0.0.0` inside the tailscale namespace, publishes it on the
 host (`CD_HOOK_PUBLISH`, default `127.0.0.1:18791`) for an existing reverse proxy, and shows

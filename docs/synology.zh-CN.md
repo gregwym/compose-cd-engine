@@ -66,6 +66,7 @@ pull 方式：
 - 拉取后核对镜像 digest 是 gateway 校验过的那个；不是则恢复旧镜像、不重建。
 - 健康检查失败自动恢复旧镜像。失败过的同一个 digest，轮询不再重试；webhook 会重试。
 - 拉取前要求 `PROJECTS_ROOT` 所在磁盘剩余空间 ≥ `CD_MIN_FREE_MB`（默认 1024）+ 2 倍镜像压缩大小；设为 0 关闭。
+- 部署成功后自动删除该项目不再使用的旧镜像（`docker image rm`，不强制；仍被任何容器使用的镜像会保留，回滚时不删除）。设置 `CD_PRUNE_IMAGES=0` 关闭。
 - 轮询标签只用 HEAD 请求（Docker Hub 不计入拉取次数）。
 
 没有 webhook 也能用：deployer 每 30 分钟轮询一次。webhook 只是让它立即检查。
