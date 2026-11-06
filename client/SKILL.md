@@ -73,3 +73,9 @@ host feature): ask the owner with `request manage --compose`. `policy` is never 
   explain them to the owner instead of trying variations.
 - `.env` values are never shown to you; pass secrets only via `--env-set` when the owner gives them.
 - Do not use `down` to "restart" something; use `restart` or `up`.
+- On Synology, inherit the default `db` log driver; do not add `json-file` or its rotation options.
+  `cm_logging` means the log requirement was not met. Explain the error instead of disabling
+  the guard or reporting success because the containers run. Existing containers with a different
+  driver need an approved recreation; restart cannot change their driver.
+- A `failed` result with `rollback_error` means restoration could not be verified; report both
+  errors. The log guard does not automatically register projects in Container Manager.

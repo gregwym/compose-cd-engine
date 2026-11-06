@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from runner import compose, files, policy, boundary as bounds, diagnostics, execution
+from runner import compose, files, policy, boundary as bounds, diagnostics, execution, cm_logs
 from shared.registry import DIGEST, repository, tag as image_tag
 from shared import preview
 from shared.wire import Denied, canonical, digest, read_line
@@ -32,7 +32,9 @@ def sha(data):
 
 
 class Runner:
-    def __init__(self, projects_root, deploy_root='', health_timeout=120, min_free_mb=1024, prune_images=True):
+    def __init__(self, projects_root, deploy_root='', health_timeout=120, min_free_mb=1024, prune_images=True,
+                 cm_mode='off'):
+        self.cm_logs = cm_logs.Guard(cm_mode)
         self.prune_images = prune_images
         self.root = Path(projects_root).resolve(strict=True)
         self.deploy_root = str(Path(deploy_root).resolve()) if deploy_root else ''
@@ -194,6 +196,16 @@ class Runner:
                 'env_keys': files.env_keys(env), 'env_sha': sha(env), 'config_files': identity['config_files']}
 
     # Lifecycle ------------------------------------------------------------
+    def check_cm_logs(self, identity):
+        if self.cm_logs.enabled:
+            # Logging fields do not need env_file contents. Do not read external
+            # env files before the project's boundary has authorized them.
+            self.cm_logs.preflight(self.structure(identity))
+
+    def wait_ready(self, identity, timeout, services=()):
+        compose.wait_healthy(identity, timeout, services)
+        self.cm_logs.verify(identity, services)
+
     def services(self, services):
         services = services or []
         if not isinstance(services, list) or any(not isinstance(s, str) or not compose.SERVICE.fullmatch(s)
@@ -209,15 +221,18 @@ class Runner:
             identity = self.identity(identity)
             # start/stop/restart reuse the containers that exist; only (re)creation reads the files.
             if action in ('start', 'stop', 'restart'):
+                if action != 'stop':
+                    self.check_cm_logs(identity)
+                    self.cm_logs.verify(identity, services)
                 compose.compose(identity, action, *services, timeout=600)
                 if action != 'stop':
-                    compose.wait_healthy(identity, self.health_timeout, services)
+                    self.wait_ready(identity, self.health_timeout, services)
                 return {'status': 'success'}
             # Files may have changed since the grant; anything that (re)creates containers re-checks them.
             self.check_files(identity, boundary)
             if action == 'up':
                 compose.compose(identity, 'up', '-d', '--no-build', *services)
-                compose.wait_healthy(identity, self.health_timeout, services)
+                self.wait_ready(identity, self.health_timeout, services)
                 return {'status': 'success'}
             self.space()
             previous = compose.image_ids(identity)
@@ -225,7 +240,7 @@ class Runner:
             compose.compose(identity, 'pull', '--ignore-buildable', *services)
             try:
                 compose.compose(identity, 'up', '-d', '--no-build', *services)
-                compose.wait_healthy(identity, self.health_timeout, services)
+                self.wait_ready(identity, self.health_timeout, services)
             except Denied as exc:
                 return self.recover(exc, lambda: [compose.retag(ref, image_id) for ref, image_id in previous.values()],
                                     identity, services)
@@ -238,10 +253,12 @@ class Runner:
         """What the files would (re)create: inside the manage boundary, or within the hard policy."""
         if boundary is not None:
             self.check_boundary(identity, boundary)
+            self.check_cm_logs(identity)
             return
         found = policy.violations(compose.render(identity), self.deploy_root)
         if found:
             raise Denied('policy', found)
+        self.check_cm_logs(identity)
 
     def space(self, size=0):
         """Refuse a pull that could fill the disk: keep CD_MIN_FREE_MB plus twice the download free.
@@ -279,9 +296,10 @@ class Runner:
     def recover(self, exc, restore, identity, services=()):
         try:
             restore()
+            self.check_cm_logs(identity)
             # --pull never: the restored image id must decide what starts, even with pull_policy: always.
             compose.compose(identity, 'up', '-d', '--no-build', '--pull', 'never', '--remove-orphans', *services)
-            compose.wait_healthy(identity, self.health_timeout, services)
+            self.wait_ready(identity, self.health_timeout, services)
         except (Denied, OSError) as again:
             code, detail = (again.code, again.detail) if isinstance(again, Denied) else ('write_failed', type(again).__name__)
             return {'status': 'failed', 'error': exc.code, 'detail': exc.detail,
@@ -343,6 +361,7 @@ class Runner:
         found = policy.violations(after, self.deploy_root)
         if found:
             raise Denied('policy', found)
+        self.cm_logs.preflight(after)
         if expect:
             self.expect_image(before, after, expect)
         diff = ''.join(difflib.unified_diff((current or b'').decode('utf-8', 'replace').splitlines(True),
@@ -406,7 +425,7 @@ class Runner:
             if env != old_env:
                 files.write_in_place(env_path, env, like=wd, mode=0o600)
             compose.compose(identity, 'up', '-d', '--no-build', '--remove-orphans')
-            compose.wait_healthy(identity, self.health_timeout)
+            self.wait_ready(identity, self.health_timeout)
         except (Denied, OSError) as caught:
             exc = caught if isinstance(caught, Denied) else Denied('write_failed', type(caught).__name__)
             if not plan['new']:
@@ -430,6 +449,8 @@ class Runner:
             if not raw or not current:
                 raise Denied('unknown_service')
             if current == image:
+                self.check_cm_logs(identity)
+                self.cm_logs.verify(identity)
                 return {'status': 'no_change'}
             if repository(current) != repository(image):
                 raise Denied('repository_mismatch', repository(current))
@@ -484,9 +505,13 @@ class Runner:
             identity = self.identity(identity)
             if files is None or files != self.fingerprint(identity):
                 self.check_files(identity, boundary)
+            else:
+                # A previously approved fingerprint must not bypass current log requirements.
+                self.check_cm_logs(identity)
             services = self.tagged_services(identity, image, tag)
             previous = compose.image_ids(identity)
             if all(s in previous and compose.has_digest(previous[s][1], digests) for s in services):
+                self.cm_logs.verify(identity, services)
                 return {'status': 'no_change', 'services': sorted(services)}
             self.space(size)
             names = sorted(services)
@@ -503,7 +528,7 @@ class Runner:
             try:
                 # --pull never: what starts is the image just checked, even with pull_policy: always.
                 compose.compose(identity, 'up', '-d', '--no-build', '--pull', 'never', *names)
-                compose.wait_healthy(identity, self.health_timeout, names)
+                self.wait_ready(identity, self.health_timeout, names)
             except Denied as exc:
                 return self.recover(exc, restore, identity, names)
             self.prune(identity, before)
@@ -584,7 +609,8 @@ def main():
         raise SystemExit('PROJECTS_ROOT is required')
     runner = Runner(root, os.environ.get('DEPLOY_ROOT', ''), int(os.environ.get('CD_HEALTH_TIMEOUT', '120')),
                     int(os.environ.get('CD_MIN_FREE_MB', '1024')),
-                    os.environ.get('CD_PRUNE_IMAGES', '1').strip().lower() not in ('0', 'false', 'no', 'off'))
+                    os.environ.get('CD_PRUNE_IMAGES', '1').strip().lower() not in ('0', 'false', 'no', 'off'),
+                    os.environ.get('CD_CM_MODE', 'off'))
     serve(runner)
 
 
