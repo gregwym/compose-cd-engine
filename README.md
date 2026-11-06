@@ -3,7 +3,9 @@
 Let an AI agent (for example OpenClaw) manage the Docker Compose projects on a
 Synology NAS **without giving it access to the NAS or to Docker**. The agent calls
 a small, fixed API; the owner approves each kind of action with a Passkey (Face ID).
-Projects stay fully compatible with DSM Container Manager.
+Project files retain their original paths and ownership. The Synology template
+checks CM's log-driver requirements; CLI-created projects still need to be
+imported and built in Container Manager.
 
 ```
 OpenClaw ─ signed HTTPS ─┐

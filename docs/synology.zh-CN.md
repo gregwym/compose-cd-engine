@@ -24,6 +24,26 @@
 
 会先运行一次 `prepare`（初始化 deployer 自己的状态和 socket 目录，完成后显示"已退出"，属正常），再启动三个容器：`tailscale`、`gateway`、`runner`。不需要 SSH 建目录或改属主。
 
+### Container Manager 日志保护
+
+Synology 模板不设置 `logging`，让容器继承 DSM 默认的 `db` 日志驱动，并默认设置 `CD_CM_MODE=logs`。
+Runner 的非 Synology 默认值为 `off`；目前只支持 `off` 和 `logs`。这不会修改 Docker daemon 配置。
+
+日志保护在部署前检查每个服务渲染后的配置：允许继承 `db` 或显式使用 `db`，拒绝其他驱动和未经验证的非空 logging options。
+创建、修改、启动、重启、up、镜像更新和回滚都会检查；自动更新即使批准过的文件没变也不能跳过。
+容器启动后再次核验实际驱动，`no_change` 也需核验。失败返回 `cm_logging`；回滚核验也失败时返回 `failed` 和 `rollback_error`。
+stop/down 保持可用，便于修复坏配置。
+
+旧安装迁移时，先备份原 Compose，保留自定义路径、环境和镜像设置，移除 `json-file` 的 logging 块并重建相关容器。
+修改 YAML 或 restart 不会改变已创建容器的驱动，因此仍使用旧驱动的容器不能通过 start/restart 检查。
+升级 runner 镜像时也要在已有模板的 runner environment 中添加 `CD_CM_MODE: ${CD_CM_MODE:-logs}`，否则旧模板继续使用 `off`。
+重建会短暂停服务，应在获得相应授权后进行。
+
+日志保护不自动登记 Project，也不保证 CM 的缓存记录已经同步。CLI 创建的项目仍须以**原项目名、原路径**导入 CM，完成首次构建并核验日志和启停按钮。
+
+参考：[Synology Project 帮助](https://kb.synology.com/en-global/DSM/help/ContainerManager/docker_project)、
+[Docker 日志配置](https://docs.docker.com/engine/logging/configure/)。
+
 ## 3. 登录 Tailscale
 
 打开 `tailscale` 容器日志，点击其中的登录链接，把设备加入你的 tailnet（设备名 `deployer`）。
@@ -62,7 +82,7 @@ python3 cdctl.py pair --label openclaw --wait
 
 pull 方式：
 - 项目里所有用这个 `镜像:标签` 的服务一起 pull、一起重建（例如 web 和 worker 共用一个镜像）。
-- 不改文件。文件与批准触发源时**完全一致**时不重新审查（批准页会列出项目超出常规限制的配置，比如挂载 docker.sock）；文件改过之后，每次更新都按硬策略/管理边界重新检查，不通过就拒绝，需要重新申请触发源。
+- 不改文件。文件与批准触发源时**完全一致**时不重新审查硬策略/管理边界（批准页会列出项目超出常规限制的配置，比如挂载 docker.sock）；文件改过之后重新检查，不通过就拒绝，需要重新申请触发源。启用的 CM 日志保护始终执行。
 - 拉取后核对镜像 digest 是 gateway 校验过的那个；不是则恢复旧镜像、不重建。
 - 健康检查失败自动恢复旧镜像。失败过的同一个 digest，轮询不再重试；webhook 会重试。
 - 拉取前要求 `PROJECTS_ROOT` 所在磁盘剩余空间 ≥ `CD_MIN_FREE_MB`（默认 1024）+ 2 倍镜像压缩大小；设为 0 关闭。
@@ -97,7 +117,7 @@ pin 方式和 pull + GitHub 方式的镜像要求：
 ### 在 VPS 上使用
 
 VPS 不是 Synology，但 deployer 只依赖 Docker + Compose：
-- `.env` 设 `PROJECTS_ROOT` 为项目所在目录（如 `/opt/apps`），`DEPLOY_ROOT` 为 deployer 自己的目录（如 `/opt/deployer`），用 `docker compose up -d` 启动；
+- `.env` 设 `PROJECTS_ROOT` 为项目所在目录（如 `/opt/apps`），`DEPLOY_ROOT` 为 deployer 自己的目录（如 `/opt/deployer`），另设 `CD_CM_MODE=off`，用 `docker compose up -d` 启动；
 - 项目必须用 `docker compose` 在 `PROJECTS_ROOT/<项目>/` 下启动过（deployer 从容器标签识别项目），compose 文件在项目目录内；
 - 首次 Tailscale 登录、Passkey 注册同第 3、4 节。
 
@@ -112,6 +132,7 @@ VPS 不是 Synology，但 deployer 只依赖 Docker + Compose：
 这些在 CI 中无法验证，首次部署时请逐项确认：
 
 - [ ] CM 中 `prepare` 退出码为 0，三个容器正常运行；deployer 项目在 agent 的项目列表里显示为不可管理。
+- [ ] deployer 和受管理项目容器的实际日志驱动为 `db`，CM 能正常打开日志。
 - [ ] iPhone Safari 能注册并使用 Passkey。
 - [ ] agent 修改某项目后，CM 中仍是同一个项目，可正常启动、停止、构建；编辑器里是新内容。
 - [ ] 修改后 `compose.yaml` 的属主、权限、File Station 中的 ACL 不变；旁边有 `.bak-` 备份。

@@ -11,9 +11,7 @@ x-engine: &engine
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   tmpfs: ['/tmp:size=64m,nosuid,nodev']
-  logging:
-    driver: json-file
-    options: {max-size: 2m, max-file: '3'}
+  # Inherit DSM's db logger so Container Manager can display stdout/stderr.
 
 services:
   # One-shot: makes the deployer's state and socket directories root-owned with the modes the
@@ -47,9 +45,6 @@ services:
       - ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}/run/tailscale:/var/run/tailscale
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    logging:
-      driver: json-file
-      options: {max-size: 2m, max-file: '3'}
 
   gateway:
     <<: *engine
@@ -83,6 +78,8 @@ services:
       DEPLOY_ROOT: ${DEPLOY_ROOT:?set DEPLOY_ROOT in .env}
       PROJECTS_ROOT: ${PROJECTS_ROOT:-/volume1/docker}
       CD_HEALTH_TIMEOUT: ${CD_HEALTH_TIMEOUT:-120}
+      # Check the configured and actual log drivers on every deployment; VPS: set off.
+      CD_CM_MODE: ${CD_CM_MODE:-logs}
       # Pulls are refused below this much free space on PROJECTS_ROOT (plus twice the download); 0 disables.
       CD_MIN_FREE_MB: ${CD_MIN_FREE_MB:-1024}
       # After a successful deployment, remove the images the project no longer uses; 0 keeps them.

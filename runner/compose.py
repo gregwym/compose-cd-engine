@@ -71,6 +71,7 @@ def containers():
             'config_files': [x for x in labels.get(LABEL + 'project.config_files', '').split(',') if x],
             'image': item.get('Config', {}).get('Image', ''), 'image_id': item.get('Image', ''),
             'state': state.get('Status', 'unknown'), 'health': (state.get('Health') or {}).get('Status'),
+            'log_driver': ((item.get('HostConfig') or {}).get('LogConfig') or {}).get('Type'),
             'exit_code': state.get('ExitCode'),
             'restart': ((item.get('HostConfig') or {}).get('RestartPolicy') or {}).get('Name') or 'no',
             'ports': sorted(ports, key=lambda p: (p['host_port'], p['host_ip'])),
